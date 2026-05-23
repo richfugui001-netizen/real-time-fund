@@ -106,9 +106,6 @@ export const useStorageStore = create((set, get) => ({
   customSettings: {},
   fundDailyEarnings: {},
 
-  // 估值分时序列（每次调用估值接口记录，用于分时图，不持久化）
-  valuationSeries: {},
-
   // 排序相关状态
   sortBy: 'default',
   sortOrder: 'desc',
@@ -407,11 +404,6 @@ export const useStorageStore = create((set, get) => ({
     const next = typeof nextFundDailyEarnings === 'function' ? nextFundDailyEarnings(get().fundDailyEarnings) : nextFundDailyEarnings;
     set({ fundDailyEarnings: next });
     get().setItem('fundDailyEarnings', JSON.stringify(next));
-  },
-
-  setValuationSeries: (nextValuationSeries) => {
-    const next = typeof nextValuationSeries === 'function' ? nextValuationSeries(get().valuationSeries) : nextValuationSeries;
-    set({ valuationSeries: next });
   },
 
   /**

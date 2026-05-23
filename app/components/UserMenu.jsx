@@ -17,6 +17,8 @@ export default function UserMenu({user,
   onSync,
   onOpenSettings,
   onOpenPortfolioEarnings,
+  onOpenDashboard,
+  onOpenReview,
   onOpenLogin,
   onLogout,
   onLogoutConfirmOpenChange,
@@ -130,6 +132,26 @@ export default function UserMenu({user,
                       className="user-menu-item"
                       onClick={() => {
                         setUserMenuOpen(false);
+                        onOpenDashboard?.();
+                      }}
+                    >
+                      <ListIcon width="16" height="16" />
+                      <span>持仓大屏</span>
+                    </button>
+                    <button
+                      className="user-menu-item"
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        onOpenReview?.();
+                      }}
+                    >
+                      <ListIcon width="16" height="16" />
+                      <span>复盘体检</span>
+                    </button>
+                    <button
+                      className="user-menu-item"
+                      onClick={() => {
+                        setUserMenuOpen(false);
                         onTutorial?.();
                       }}
                     >
@@ -217,6 +239,26 @@ export default function UserMenu({user,
                       className="user-menu-item"
                       onClick={() => {
                         setUserMenuOpen(false);
+                        onOpenDashboard?.();
+                      }}
+                    >
+                      <ListIcon width="16" height="16" />
+                      <span>持仓大屏</span>
+                    </button>
+                    <button
+                      className="user-menu-item"
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        onOpenReview?.();
+                      }}
+                    >
+                      <ListIcon width="16" height="16" />
+                      <span>复盘体检</span>
+                    </button>
+                    <button
+                      className="user-menu-item"
+                      onClick={() => {
+                        setUserMenuOpen(false);
                         onTutorial?.();
                       }}
                     >
@@ -270,4 +312,3 @@ export default function UserMenu({user,
     </>
   );
 }
-

@@ -53,7 +53,7 @@ import {
 } from './lib/dailyEarnings';
 import { loadHolidaysForYears, isTradingDay as isDateTradingDay } from './lib/tradingCalendar';
 import { asyncPool, withRetry } from './lib/asyncHelper';
-import { fetchFundData, fetchNetValueRangeFromTrend, fetchSmartFundNetValue, fetchSmartFundNetValueBackward, fetchFundPeriodReturns, searchFunds } from './api/fund';
+import { fetchFundData, fetchNetValueRangeFromTrend, fetchSmartFundNetValue, fetchSmartFundNetValueBackward, searchFunds, fetchFundPeriodReturns } from './api/fund';
 import PcFundTable from './components/PcFundTable';
 import MobileFundTable from './components/MobileFundTable';
 import MobileBottomNav from './components/MobileBottomNav';
@@ -63,8 +63,6 @@ import { useTheme } from './hooks/useTheme';
 import { useTradingDay } from './hooks/useTradingDay';
 import { useNavHeights } from './hooks/useNavHeights';
 import { useScanImport } from './hooks/useScanImport';
-import { useRefreshManager } from './hooks/useRefreshManager';
-import { useSyncManager, normalizeFundDailyEarningsScoped } from './hooks/useSyncManager';
 import { useIsMobile } from './hooks/useIsMobile';
 import {useUserStore, clearAuthUser, setAuthUser, useStorageStore, storageStore, getFundCodesSignature, DEFAULT_SORT_RULES, SORT_DISPLAY_MODES, useModalStore, useIsAnyModalOpen} from './stores';
 import ModalsLayer from './components/ModalsLayer';
@@ -98,7 +96,42 @@ import {
 } from './lib/fundHelpers';
 
 import GlobalToast from './components/GlobalToast';
-import { dedupeByCode, normalizeCode, cleanCodeArray, normalizeNumber } from './lib/normalize';
+
+// --- Utility Functions ---
+const dedupeByCode = (list) => {
+  const seen = new Set();
+  return list.filter((f) => {
+    const c = f?.code;
+    if (!c || seen.has(c)) return false;
+    seen.add(c);
+    return true;
+  });
+};
+
+function normalizeCode(value) {
+  return String(value ?? '').trim();
+}
+
+function cleanCodeArray(input, allowedSet = null) {
+  const arr = Array.isArray(input) ? input : [];
+  const next = [];
+  const seen = new Set();
+  for (const v of arr) {
+    const code = normalizeCode(v);
+    if (!code) continue;
+    if (allowedSet && !allowedSet.has(code)) continue;
+    if (seen.has(code)) continue;
+    seen.add(code);
+    next.push(code);
+  }
+  return next;
+}
+
+const normalizeNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+};
 
 export default function HomePage() {
   const {
@@ -116,7 +149,6 @@ export default function HomePage() {
     dcaPlans, setDcaPlans,
     customSettings, setCustomSettings,
     fundDailyEarnings, setFundDailyEarnings,
-    valuationSeries, setValuationSeries,
     initCollapsed, initRefreshMs,
     initHoldings, initGroupHoldings,
     initPendingTrades, initTransactions,
@@ -157,6 +189,9 @@ export default function HomePage() {
   }, [fundTagRecords, funds]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const timerRef = useRef(null);
+  const refreshCycleStartRef = useRef(Date.now());
+  const refreshingRef = useRef(false);
   const isLoggingOutRef = useRef(false);
   const isExplicitLoginRef = useRef(false);
 
@@ -188,6 +223,11 @@ export default function HomePage() {
     } catch { }
   }, [customSettings]);
 
+  // 全局刷新状态
+  const [refreshing, setRefreshing] = useState(false);
+
+  // 估值分时序列（每次调用估值接口记录，用于分时图）
+  const [valuationSeries, setValuationSeries] = useState({});
   // 自选状态
   const [currentTab, setCurrentTab] = useState('all');
   const [isPending, startTransition] = useTransition();
@@ -223,6 +263,34 @@ export default function HomePage() {
 
   // 用户认证状态（Supabase 会话仍由客户端持久化；用户信息由 zustand 全局管理）
   const user = useUserStore((s) => s.user);
+  const [lastSyncTime, setLastSyncTime] = useState(null);
+  const deviceIdRef = useRef('');
+
+  useEffect(() => {
+    // 优先使用服务端返回的时间，如果没有则使用本地存储的时间
+    // 这里只设置初始值，后续更新由接口返回的时间驱动
+    const stored = storageStore.getItem('localUpdatedAt');
+    if (stored) {
+      setLastSyncTime(stored);
+    } else {
+      // 如果没有存储的时间，暂时设为 null，等待接口返回
+      setLastSyncTime(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const key = 'rtfDeviceId';
+      let id = storageStore.getItem(key);
+      if (!id) {
+        id = uuidv4();
+        storageStore.setItem(key, id);
+      }
+      deviceIdRef.current = id;
+    } catch {
+      deviceIdRef.current = uuidv4();
+    }
+  }, []);
   const userAvatar = useMemo(() => {
     if (!user?.id) return '';
     return createAvatar(identicon, {
@@ -313,6 +381,8 @@ export default function HomePage() {
   const setFundDeleteBulkConfirm = (v) => _ms({ fundDeleteBulkConfirm: typeof v === 'function' ? v(_gs().fundDeleteBulkConfirm) : v });
   const setFundTagsEdit = (v) => _ms({ fundTagsEdit: typeof v === 'function' ? v(_gs().fundTagsEdit) : v });
   const setSuccessModal = (v) => _ms({ successModal: typeof v === 'function' ? v(_gs().successModal) : v });
+  const setCloudConfigModal = (v) => _ms({ cloudConfigModal: typeof v === 'function' ? v(_gs().cloudConfigModal) : v });
+  const setDeviceConflictModal = (v) => _ms({ deviceConflictModal: typeof v === 'function' ? v(_gs().deviceConflictModal) : v });
 
   const fundDetailDrawerCloseRef = useRef(null); // 由 MobileFundTable 注入，用于确认删除时关闭基金详情 Drawer
   const fundDetailDialogCloseRef = useRef(null); // 由 PcFundTable 注入，用于确认删除时关闭基金详情 Dialog
@@ -348,6 +418,8 @@ export default function HomePage() {
   const shouldShowGroupFundSearch = isMobile ? showGroupFundSearchMobile : showGroupFundSearchPc;
 
 
+
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // 交易日检测（抽离到 useTradingDay）
   const { isTradingDay } = useTradingDay();
@@ -2266,25 +2338,13 @@ export default function HomePage() {
     dedupeByCode,
   });
 
-  const refreshAllRef = useRef(null);
-  const {
-    isSyncing,
-    lastSyncTime,
-    scheduleSync,
-    syncUserConfig,
-    fetchCloudConfig,
-    applyCloudConfig,
-    handleSyncLocalConfig,
-    triggerCustomSettingsSync,
-    skipSyncRef,
-    deviceConflictModalOpenRef,
-    storageHelper,
-  } = useSyncManager({
-    showToast,
-    refreshAllRef,
-    setTempSeconds,
-    setFundTagRecords,
-  });
+  const syncDebounceRef = useRef(null);
+
+  const lastSyncedRef = useRef('');
+  const skipSyncRef = useRef(isSupabaseConfigured);
+  const userIdRef = useRef(null);
+  const deviceConflictModalOpenRef = useRef(false);
+  const dirtyKeysRef = useRef(new Set()); // 记录发生变化的字段
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -2295,6 +2355,129 @@ export default function HomePage() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    userIdRef.current = user?.id || null;
+  }, [user]);
+
+  useEffect(() => {
+    const unsub = useModalStore.subscribe(
+      (s) => s.deviceConflictModal.open,
+      (open) => { deviceConflictModalOpenRef.current = open; }
+    );
+    deviceConflictModalOpenRef.current = useModalStore.getState().deviceConflictModal.open;
+    return unsub;
+  }, []);
+
+
+  const scheduleSync = useCallback(() => {
+    if (!userIdRef.current) return;
+    if (skipSyncRef.current) return;
+    if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current);
+    syncDebounceRef.current = setTimeout(() => {
+      // 收集脏数据
+      const dirtyKeys = new Set(dirtyKeysRef.current);
+      // 如果没有脏数据，且不是首次同步（可以增加其他判断），则不处理
+      // 但这里 scheduleSync 通常是由 storage 触发，所以应该有脏数据
+      // 除非是初次加载
+      if (dirtyKeys.size === 0) {
+        // Fallback to full sync if needed, or just return
+        // 这里为了保险，如果是空的，我们做全量
+        // 但通常 dirtyKeysRef 应该被填充了
+      }
+
+      const payload = collectLocalPayload(dirtyKeys.size > 0 ? dirtyKeys : null);
+
+      // 清空脏数据标记
+      dirtyKeysRef.current.clear();
+
+      // 计算 hash 比较是否真的变了（对于部分更新，这个比较可能意义不大，除非我们也部分比较）
+      // 这里简化逻辑：如果是部分更新，直接发送
+      if (dirtyKeys.size > 0) {
+        syncUserConfig(userIdRef.current, false, payload, true);
+      } else {
+        const next = getComparablePayload(payload);
+        if (next === lastSyncedRef.current) return;
+        lastSyncedRef.current = next;
+        syncUserConfig(userIdRef.current, false, payload, false);
+      }
+    }, 1000 * 2); // 往云端同步的防抖时间
+  }, []);
+
+  const { setOnSync } = useStorageStore();
+
+  const storageHelper = useMemo(() => {
+    const triggerSync = (key, prevValue, nextValue) => {
+      // 标记为脏数据
+      if (key === '__clear__') {
+        // 如果是清空，由于无法得知具体的 keys，这里可能需要特殊处理或者简单的全量标记
+        // 但目前的 triggerSync 主要用于增量标记，这里简化处理
+        return;
+      }
+      dirtyKeysRef.current.add(key);
+
+      // fundValuationTimeseries 参与云端同步，但不主动触发同步，等待其他操作触发时一并提交
+      if (key === 'fundValuationTimeseries') {
+        return;
+      }
+
+      if (!skipSyncRef.current) {
+        const now = nowInTz().toISOString();
+        storageStore.setItem('localUpdatedAt', now);
+        setLastSyncTime(now);
+      }
+      scheduleSync();
+    };
+
+    // 初始化时注入同步回调
+    setOnSync(triggerSync);
+
+    return storageStore;
+  }, [setOnSync, scheduleSync]);
+
+  useEffect(() => {
+    // 仅以下 key 的跨标签页变更会触发云端同步；fundValuationTimeseries 采用跟随同步策略，不主动触发
+    const keys = new Set(['funds', 'tags', 'favorites', 'groups', 'collapsedCodes', 'collapsedTrends', 'collapsedEarnings', 'refreshMs', 'holdings', 'groupHoldings', 'pendingTrades', 'dcaPlans', 'customSettings', 'fundDailyEarnings']);
+    const onStorage = (e) => {
+      if (!e.key) return;
+      if (e.key === 'localUpdatedAt') {
+        setLastSyncTime(e.newValue);
+      }
+      if (!keys.has(e.key)) return;
+
+      // 使用 storageStore 提供的签名函数进行精细判断
+      import('./stores/storageStore').then(({ getFundCodesSignature, getTagsStoreSignature }) => {
+        if (e.key === 'funds') {
+          const prevSig = getFundCodesSignature(e.oldValue);
+          const nextSig = getFundCodesSignature(e.newValue);
+          if (prevSig === nextSig) return;
+        }
+        if (e.key === 'tags') {
+          const prevSig = getTagsStoreSignature(e.oldValue);
+          const nextSig = getTagsStoreSignature(e.newValue);
+          if (prevSig === nextSig) return;
+        }
+        scheduleSync();
+      });
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current);
+    };
+  }, [scheduleSync]);
+
+  const triggerCustomSettingsSync = useCallback(() => {
+    queueMicrotask(() => {
+      dirtyKeysRef.current.add('customSettings');
+      if (!skipSyncRef.current) {
+        const now = nowInTz().toISOString();
+        storageStore.setItem('localUpdatedAt', now);
+        setLastSyncTime(now);
+      }
+      scheduleSync();
+    });
+  }, [scheduleSync]);
 
   const openFundTagsEdit = useCallback((row) => {
     if (!row?.code) return;
@@ -2660,15 +2843,6 @@ export default function HomePage() {
       isSchedulingDcaRef.current = false;
     }
   }, [isTradingDay, setDcaPlans, setPendingTrades]);
-
-  const { refreshing, refreshCycleStartRef, manualRefresh, refreshAll } = useRefreshManager({
-    scheduleDcaTrades,
-    processPendingQueue,
-    deviceConflictModalOpenRef,
-  });
-  useEffect(() => {
-    refreshAllRef.current = refreshAll;
-  }, [refreshAll]);
 
   const handleAddGroup = (name) => {
     const newGroup = {
@@ -3393,30 +3567,54 @@ export default function HomePage() {
     }
   };
 
+  const refreshCodesRef = useRef([]);
   useEffect(() => {
-    const val = String(deferredSearchTerm ?? '').trim();
-    if (!val) {
+    refreshCodesRef.current = Array.from(new Set((isArray(funds) ? funds : []).map((f) => f.code))).filter(Boolean);
+  }, [funds]);
+
+  useEffect(() => {
+    refreshCycleStartRef.current = Date.now();
+
+    const tick = () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        const codes = refreshCodesRef.current || [];
+        if (codes.length) {
+          refreshAll(codes);
+        } else {
+          tick(); // 如果没基金，继续等下一周期
+        }
+      }, refreshMs);
+    };
+
+    tick();
+
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [refreshMs]);
+
+  const performSearch = async (val) => {
+    if (!String(val ?? '').trim()) {
       setSearchResults([]);
       return;
     }
-
-    if (val.length < 2) return;
-
     setIsSearching(true);
-    searchFunds(val)
-      .then(results => {
-        setSearchResults(results);
-      })
-      .catch(e => {
-        console.error('搜索失败', e);
-      })
-      .finally(() => {
-        setIsSearching(false);
-      });
-  }, [deferredSearchTerm]);
+    try {
+      const fundsOnly = await searchFunds(val);
+      setSearchResults(fundsOnly);
+    } catch (e) {
+      console.error('搜索失败', e);
+    } finally {
+      setIsSearching(false);
+    }
+  };
 
   const handleSearchInput = (e) => {
-    setSearchTerm(e.target.value);
+    const val = e.target.value;
+    setSearchTerm(val);
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => performSearch(val), 300);
   };
 
   const toggleSelectFund = (fund) => {
@@ -3532,6 +3730,403 @@ export default function HomePage() {
       setError('批量添加失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const refreshAll = async (codes) => {
+    // 如果弹窗拦截同步中，则不允许执行数据刷新，但保持心跳循环
+    if (deviceConflictModalOpenRef.current) {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        const nextCodes = refreshCodesRef.current || [];
+        if (nextCodes.length) refreshAll(nextCodes);
+      }, refreshMs);
+      return;
+    }
+
+    // 【步骤 1】重入锁检查：防止多个刷新任务同时运行导致状态混乱
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    setRefreshing(true);
+
+    // 【步骤 2】用于判断基金是否已被用户删除
+    const uniqueCodes = Array.from(new Set(codes));
+
+    const fundCodeStillInStorage = (code) => {
+      if (!code) return false;
+      try {
+        const currentFunds = storageStore.getItem('funds', []);
+        return currentFunds.some(f => f.code === code);
+      } catch (e) {
+        return false;
+      }
+    };
+
+    const getStoredFundSnapshot = (code) => {
+      if (!code) return null;
+      try {
+        const currentFunds = storageStore.getItem('funds', []);
+        return currentFunds.find(f => f.code === code) || null;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    try {
+      const updated = [];
+      const dailyChanges = {}; // 存储待更新的每日收益 { [scope]: { [code]: nextList } }
+      let earningsChanged = false;
+
+      // ... 辅助函数定义 (isValidDateStr, addDays, calcEarningsFromNavs 等) ...
+      const isValidDateStr = (s) => isString(s) && /^\d{4}-\d{2}-\d{2}$/.test(s);
+      const addDays = (dateStr, days) => dayjs.tz(dateStr, TZ).add(days, 'day').format('YYYY-MM-DD');
+      const subDays = (dateStr, days) => dayjs.tz(dateStr, TZ).subtract(days, 'day').format('YYYY-MM-DD');
+      const calcEarningsFromNavs = (nav, prevNav, share) => (nav - prevNav) * share;
+      const calcRateFromEarnings = (earnings, baseCostAmount) => {
+        if (!Number.isFinite(earnings) || !Number.isFinite(baseCostAmount) || baseCostAmount <= 0) return null;
+        return (earnings / baseCostAmount) * 100;
+      };
+
+      const calcLatestDayFromFund = (u, share, baseCostAmount) => {
+        const nav = Number(u?.dwjz);
+        if (!Number.isFinite(nav) || nav <= 0) return null;
+        const lastNav = u?.lastNav != null && u.lastNav !== '' ? Number(u.lastNav) : null;
+        if (lastNav != null && Number.isFinite(lastNav) && lastNav > 0) {
+          const earnings = calcEarningsFromNavs(nav, lastNav, share);
+          return {
+            earnings,
+            rate: calcRateFromEarnings(earnings, baseCostAmount),
+          };
+        }
+        const zzl = u?.zzl != null && u.zzl !== '' ? Number(u.zzl) : Number.NaN;
+        if (Number.isFinite(zzl)) {
+          const prev = nav / (1 + zzl / 100);
+          if (Number.isFinite(prev) && prev > 0) {
+            const earnings = calcEarningsFromNavs(nav, prev, share);
+            return {
+              earnings,
+              rate: calcRateFromEarnings(earnings, baseCostAmount),
+            };
+          }
+        }
+        return null;
+      };
+
+      const findPrevTradingNav = async (code, dateStr, navCache, u) => {
+        if (u && isValidDateStr(u.jzrq) && u.jzrq === dateStr) {
+          const lastNav = u?.lastNav != null && u.lastNav !== '' ? Number(u.lastNav) : null;
+          if (lastNav != null && Number.isFinite(lastNav) && lastNav > 0) return lastNav;
+        }
+        if (navCache && navCache.size) {
+          let bestD = '';
+          let bestNav = null;
+          for (const d of navCache.keys()) {
+            if (!isValidDateStr(d) || d >= dateStr) continue;
+            const v = navCache.get(d);
+            if (!Number.isFinite(v) || v <= 0) continue;
+            if (!bestD || d > bestD) {
+              bestD = d;
+              bestNav = v;
+            }
+          }
+          if (bestNav != null) return bestNav;
+        }
+        const end = subDays(dateStr, 1);
+        const start = subDays(dateStr, 120);
+        const rows = await fetchNetValueRangeFromTrend(code, start, end);
+        for (const r of rows) {
+          if (navCache) navCache.set(r.date, r.nav);
+        }
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if (rows[i].date < dateStr) {
+            const v = rows[i].nav;
+            if (Number.isFinite(v) && v > 0) return v;
+          }
+        }
+        return null;
+      };
+
+      const localRecordToChanges = (scope, code, earnings, dateStr, rate, baseCostAmount, force = false) => {
+        if (!dailyChanges[scope]) dailyChanges[scope] = {};
+        const list = dailyChanges[scope][code] ||
+                     (fundDailyEarnings[scope] && Array.isArray(fundDailyEarnings[scope][code]) ? fundDailyEarnings[scope][code] : []);
+        const existingIndex = list.findIndex(item => item.date === dateStr);
+        const normalizedRate = isNumber(rate) && Number.isFinite(rate) ? rate : null;
+        const normalizedBaseCostAmount = Number.isFinite(Number(baseCostAmount)) && Number(baseCostAmount) > 0
+          ? Number(baseCostAmount)
+          : null;
+        const nextList = existingIndex >= 0
+          ? list.map((item, i) => {
+            if (i !== existingIndex) return item;
+            const prevRate = Number(item?.rate);
+            const prevBaseCostAmount = Number(item?.baseCostAmount);
+            // 如果是强制更新（确权阶段），或者原本数据缺失，则更新 rate 和 baseCostAmount
+            const shouldUpdateRate = force || !Number.isFinite(prevRate);
+            const shouldUpdateBase = force || !(Number.isFinite(prevBaseCostAmount) && prevBaseCostAmount > 0);
+            return {
+              date: dateStr,
+              earnings,
+              rate: shouldUpdateRate ? normalizedRate : prevRate,
+              baseCostAmount: shouldUpdateBase ? normalizedBaseCostAmount : prevBaseCostAmount,
+            };
+          })
+          : [...list, { date: dateStr, earnings, rate: normalizedRate, baseCostAmount: normalizedBaseCostAmount }];
+        nextList.sort((a, b) => a.date.localeCompare(b.date));
+        dailyChanges[scope][code] = nextList;
+        earningsChanged = true;
+      };
+
+      const nextValuationSeries = { ...valuationSeries };
+      let valuationChanged = false;
+
+      // 【步骤 3】核心流水线：使用 asyncPool 控制并发（同时抓取 3 个基金），降低接口并发压力
+      await asyncPool(3, uniqueCodes, async (c) => {
+        if (!fundCodeStillInStorage(c)) return;
+        let data = null;
+        try {
+          // 【步骤 3.1】数据获取：调用 api 获取实时估值、净值和持仓数据
+          data = await fetchFundData(c);
+        } catch (e) {
+          console.error(`刷新基金 ${c} 失败`, e);
+          if (fundCodeStillInStorage(c)) {
+            try {
+              const arr = storageStore.getItem('funds', []);
+              data = arr.find((f) => f.code === c);
+            } catch { }
+          }
+        }
+
+        if (!data || !fundCodeStillInStorage(c)) return;
+
+        const oldData = getStoredFundSnapshot(c);
+        // 估值查询失败或返回空 gsz 时复用本地上一轮有效估值，避免界面估清；持仓/净值仍用本轮接口结果。
+        const hasValidGsz = (row) => row?.gsz != null && row?.gsz !== '' && Number.isFinite(Number(row?.gsz));
+        if (oldData && !hasValidGsz(data) && hasValidGsz(oldData)) {
+          data.gsz = oldData.gsz;
+          data.gszzl = oldData.gszzl;
+          data.gztime = oldData.gztime;
+          if (oldData.valuationSource) data.valuationSource = oldData.valuationSource;
+          data.noValuation = false;
+        }
+
+        updated.push(data);
+
+        // 【步骤 3.2】估值时序记录
+        const storedFund = getStoredFundSnapshot(data.code);
+        const fundDs = storedFund?.dataSource || 1;
+        if (data.code != null && !data.noValuation && Number.isFinite(Number(data.gsz))) {
+          if (data.fundValuationTimeseries && isPlainObject(data.fundValuationTimeseries)) {
+            // 数据源 2/3：使用 API 返回的完整分时序列，写入对应数据源桶
+            for (const [tsCode, tsList] of Object.entries(data.fundValuationTimeseries)) {
+              if (Array.isArray(tsList) && tsList.length > 0) {
+                persistValuationSeries(tsCode, fundDs, tsList);
+                nextValuationSeries[tsCode] = tsList;
+                valuationChanged = true;
+              }
+            }
+          } else {
+            // 数据源 1：逐点记录分时估值
+            const recorded = recordValuation(data.code, { gsz: data.gsz, gztime: data.gztime }, fundDs);
+            if (recorded) {
+              nextValuationSeries[data.code] = recorded;
+              valuationChanged = true;
+            }
+          }
+        }
+
+        // 【步骤 3.3】收益补齐逻辑：检查本地历史收益记录，如有缺失则根据持仓和历史净值进行追溯计算
+        try {
+          const targetScopes = [];
+          if (holdings[data.code] && isNumber(holdings[data.code].share) && holdings[data.code].share > 0) {
+            targetScopes.push(DAILY_EARNINGS_SCOPE_ALL);
+          }
+          Object.keys(groupHoldings || {}).forEach(gid => {
+            if (groupHoldings[gid]?.[data.code] && isNumber(groupHoldings[gid][data.code].share) && groupHoldings[gid][data.code].share > 0) {
+              targetScopes.push(gid);
+            }
+          });
+
+          if (targetScopes.length === 0) return;
+
+          const latestNavDate = data.jzrq;
+          if (!isValidDateStr(latestNavDate)) return;
+
+          const navCache = new Map();
+
+          for (const scope of targetScopes) {
+            const h = scope === DAILY_EARNINGS_SCOPE_ALL ? holdings[data.code] : groupHoldings[scope][data.code];
+            const existing = dailyChanges[scope]?.[data.code] ||
+                             (fundDailyEarnings[scope] && Array.isArray(fundDailyEarnings[scope][data.code]) ? fundDailyEarnings[scope][data.code] : []);
+            const lastRecordedDate = existing.length ? existing[existing.length - 1]?.date : null;
+
+            const getEffectiveShare = (targetDate) => {
+              let baseShare = h.share;
+              const list = transactions[data.code] || [];
+              for (const tx of list) {
+                if (!tx || !tx.date || tx.date < targetDate) continue;
+                const gid = tx.groupId || null;
+                const txInScope = (scope === DAILY_EARNINGS_SCOPE_ALL) ? !gid : (gid === scope);
+                if (!txInScope) continue;
+                if (tx.isHistoryOnly) continue;
+                const s = Number(tx.share) || 0;
+                if (tx.type === 'buy') baseShare -= s;
+                else if (tx.type === 'sell') baseShare += s;
+              }
+              return Math.max(0, baseShare);
+            };
+
+            if (!existing.length) {
+              const share = getEffectiveShare(latestNavDate);
+              const unitCost = Number(h?.cost);
+              const baseCostAmount = Number.isFinite(unitCost) && unitCost > 0 ? unitCost * share : null;
+              if (share > 0) {
+                const v = calcLatestDayFromFund(data, share, baseCostAmount);
+                if (v && Number.isFinite(v.earnings) && fundCodeStillInStorage(data.code)) {
+                  localRecordToChanges(scope, data.code, v.earnings, latestNavDate, v.rate, baseCostAmount, true);
+                }
+              }
+              if (!(dailyChanges[scope] && dailyChanges[scope][data.code])) {
+                try {
+                  const nav = Number(data.dwjz);
+                  if (Number.isFinite(nav) && nav > 0) {
+                    navCache.set(latestNavDate, nav);
+                    const prevNav = await findPrevTradingNav(data.code, latestNavDate, navCache, data);
+                    const share = getEffectiveShare(latestNavDate);
+                    if (fundCodeStillInStorage(data.code) && Number.isFinite(prevNav) && prevNav > 0 && share > 0) {
+                      const earnings = calcEarningsFromNavs(nav, prevNav, share);
+                      const unitCost = Number(h?.cost);
+                      const baseCostAmount = Number.isFinite(unitCost) && unitCost > 0 ? unitCost * share : null;
+                      const rate = calcRateFromEarnings(earnings, baseCostAmount);
+                      if (Number.isFinite(earnings)) {
+                        localRecordToChanges(scope, data.code, earnings, latestNavDate, rate, baseCostAmount, true);
+                      }
+                    }
+                  }
+                } catch { }
+              }
+            } else if (isValidDateStr(lastRecordedDate) && lastRecordedDate < latestNavDate) {
+              const latestNav = Number(data.dwjz);
+              if (Number.isFinite(latestNav) && latestNav > 0) navCache.set(latestNavDate, latestNav);
+
+              const start = addDays(lastRecordedDate, 1);
+              const navRows = await fetchNetValueRangeFromTrend(data.code, lastRecordedDate, latestNavDate);
+              if (Number.isFinite(latestNav) && latestNav > 0 && !navRows.some(r => r.date === latestNavDate)) {
+                navRows.push({ date: latestNavDate, nav: latestNav });
+                navRows.sort((a, b) => a.date.localeCompare(b.date));
+              }
+              if (fundCodeStillInStorage(data.code)) {
+                for (const r of navRows) navCache.set(r.date, r.nav);
+                const firstIdx = navRows.findIndex((r) => r.date >= start);
+                if (firstIdx !== -1) {
+                  for (let j = firstIdx; j < navRows.length; j++) {
+                    const prevNav = j > 0 ? navRows[j - 1].nav : await findPrevTradingNav(data.code, navRows[j].date, navCache, data);
+                    if (!fundCodeStillInStorage(data.code)) break;
+                    if (!Number.isFinite(prevNav) || prevNav <= 0) continue;
+                    const nav = navRows[j].nav;
+                    const cursor = navRows[j].date;
+                    if (!Number.isFinite(nav) || nav <= 0) continue;
+                    const share = getEffectiveShare(cursor);
+                    if (share <= 0) continue;
+                    const earnings = calcEarningsFromNavs(nav, prevNav, share);
+                    const unitCost = Number(h?.cost);
+                    const baseCostAmount = Number.isFinite(unitCost) && unitCost > 0 ? unitCost * share : null;
+                    const rate = calcRateFromEarnings(earnings, baseCostAmount);
+                    if (Number.isFinite(earnings)) {
+                      localRecordToChanges(scope, data.code, earnings, cursor, rate, baseCostAmount, true);
+                    }
+                  }
+                }
+              }
+            } else if (isValidDateStr(lastRecordedDate) && lastRecordedDate === latestNavDate) {
+              // 当日收益已记录但净值可能已更新，用最新净值重新计算当日收益
+              const share = getEffectiveShare(latestNavDate);
+              const unitCost = Number(h?.cost);
+              const baseCostAmount = Number.isFinite(unitCost) && unitCost > 0 ? unitCost * share : null;
+              if (share > 0) {
+                const v = calcLatestDayFromFund(data, share, baseCostAmount);
+                if (v && Number.isFinite(v.earnings) && fundCodeStillInStorage(data.code)) {
+                  localRecordToChanges(scope, data.code, v.earnings, latestNavDate, v.rate, baseCostAmount, true);
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn(`记录 ${data.code} 每日收益失败`, e);
+        }
+      });
+
+      // 【步骤 4】UI 与存储同步：统一更新 React 状态和本地 localStorage，减少页面重绘
+      if (updated.length > 0) {
+        setFunds(prev => {
+          // 优化：先建 Map 做 O(n) 查找，避免 prev.map + updated.find 的 O(n²)
+          const updatedMap = new Map(updated.map(x => [x.code, x]));
+          let changed = false;
+          const next = prev.map((f) => {
+            const u = updatedMap.get(f.code);
+            if (!u) return f;
+            changed = true;
+            const merged = { ...u };
+            if (f.addedAt != null) merged.addedAt = f.addedAt;
+            if (f.addBaseNav != null) merged.addBaseNav = f.addBaseNav;
+            if (f.addBaseDate != null) merged.addBaseDate = f.addBaseDate;
+            if (f.dataSource != null) merged.dataSource = f.dataSource;
+            if (merged.addedAt == null || merged.addBaseNav == null || merged.addBaseDate == null) {
+              const snap = getAddBaseSnapshotFromFund(merged);
+              if (merged.addedAt == null) merged.addedAt = Date.now();
+              if (merged.addBaseNav == null && snap.nav != null) merged.addBaseNav = snap.nav;
+              if (merged.addBaseDate == null && snap.date) merged.addBaseDate = snap.date;
+            }
+            return merged;
+          });
+          // 引用相等时直接返回 prev，不触发下游重渲
+          return changed ? next : prev;
+        });
+        if (valuationChanged) {
+          setValuationSeries(prev => {
+            const next = { ...prev };
+            Object.entries(nextValuationSeries).forEach(([code, list]) => {
+               next[code] = list;
+            });
+            return next;
+          });
+        }
+      }
+
+      if (earningsChanged) {
+        setFundDailyEarnings(prev => {
+          const next = { ...prev };
+          for (const [scope, bucket] of Object.entries(dailyChanges)) {
+            next[scope] = { ...next[scope], ...bucket };
+          }
+          return next;
+        });
+      }
+    } catch (e) {
+      console.error('刷新过程出错', e);
+    } finally {
+      // 【步骤 5】后期调度：重置锁定状态，并根据用户设置的时间间隔启动下一次定时刷新
+      refreshingRef.current = false;
+      setRefreshing(false);
+      refreshCycleStartRef.current = Date.now();
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        const codes = refreshCodesRef.current || [];
+        if (codes.length) refreshAll(codes);
+      }, refreshMs);
+
+      // 【步骤 5.5】定投处理：自动生成定投待处理交易
+      try {
+        await scheduleDcaTrades();
+      } catch (e) {
+        console.warn('生成定投待处理交易出错', e);
+      }
+
+      // 【步骤 6】队列处理：执行可能积压的待处理交易（如到达触发价格的自动交易、定投交易等）
+      try {
+        await processPendingQueue();
+      } catch (e) {
+        console.warn('待交易处理出错', e);
+      }
     }
   };
 
@@ -4238,6 +4833,13 @@ export default function HomePage() {
     });
   };
 
+  const manualRefresh = async () => {
+    if (refreshingRef.current) return;
+    const codes = Array.from(new Set(funds.map((f) => f.code)));
+    if (!codes.length) return;
+    await refreshAll(codes);
+  };
+
   const saveSettings = (e, secondsOverride, showMarketIndexOverride, showGroupFundSearchOverride, isMobileOverride) => {
     e?.preventDefault?.();
     const seconds = secondsOverride ?? tempSeconds;
@@ -4300,6 +4902,1015 @@ export default function HomePage() {
 
   const importFileRef = useRef(null);
   const [importMsg, setImportMsg] = useState('');
+
+
+  const normalizeFundDailyEarningsScoped = (source) => {
+    if (!isPlainObject(source)) return {};
+    const values = Object.values(source);
+    const hasScoped = values.some((v) => isPlainObject(v));
+    if (!hasScoped) {
+      return { [DAILY_EARNINGS_SCOPE_ALL]: source };
+    }
+    return source;
+  };
+
+  function getComparablePayload(payload) {
+    if (!isPlainObject(payload)) return '';
+    const rawFunds = Array.isArray(payload.funds) ? payload.funds : [];
+    const fundCodes = rawFunds
+      .map((fund) => normalizeCode(fund?.code || fund?.CODE))
+      .filter(Boolean);
+    const uniqueFundCodes = Array.from(new Set(fundCodes)).sort();
+
+    const favorites = Array.isArray(payload.favorites)
+      ? Array.from(new Set(payload.favorites.map(normalizeCode).filter((code) => uniqueFundCodes.includes(code)))).sort()
+      : [];
+
+    const collapsedCodes = Array.isArray(payload.collapsedCodes)
+      ? Array.from(new Set(payload.collapsedCodes.map(normalizeCode).filter((code) => uniqueFundCodes.includes(code)))).sort()
+      : [];
+
+    const collapsedTrends = Array.isArray(payload.collapsedTrends)
+      ? Array.from(new Set(payload.collapsedTrends.map(normalizeCode).filter((code) => uniqueFundCodes.includes(code)))).sort()
+      : [];
+
+    const collapsedEarnings = Array.isArray(payload.collapsedEarnings)
+      ? Array.from(new Set(payload.collapsedEarnings.map(normalizeCode).filter((code) => uniqueFundCodes.includes(code)))).sort()
+      : [];
+
+    const groups = Array.isArray(payload.groups)
+      ? payload.groups
+          .map((group) => {
+            const id = normalizeCode(group?.id);
+            if (!id) return null;
+            const name = isString(group?.name) ? group.name : '';
+            const codes = Array.isArray(group?.codes)
+              ? Array.from(new Set(group.codes.map(normalizeCode).filter((code) => uniqueFundCodes.includes(code)))).sort()
+              : [];
+            return { id, name, codes };
+          })
+          .filter(Boolean)
+          .sort((a, b) => a.id.localeCompare(b.id))
+      : [];
+
+    const validGroupIds = new Set(groups.map((g) => g.id));
+
+    const holdingsSource = isPlainObject(payload.holdings) ? payload.holdings : {};
+    const holdings = {};
+    Object.keys(holdingsSource)
+      .map(normalizeCode)
+      .filter((code) => uniqueFundCodes.includes(code))
+      .sort()
+      .forEach((code) => {
+        const value = holdingsSource[code] || {};
+        const share = normalizeNumber(value.share);
+        const cost = normalizeNumber(value.cost);
+        if (share === null && cost === null) return;
+        holdings[code] = { share, cost };
+      });
+
+    const ghSource = isPlainObject(payload.groupHoldings) ? payload.groupHoldings : {};
+    const groupHoldingsNorm = {};
+    Object.keys(ghSource)
+      .map(normalizeCode)
+      .filter((gid) => validGroupIds.has(gid))
+      .sort()
+      .forEach((gid) => {
+        const bucket = ghSource[gid] || {};
+        const inner = {};
+        Object.keys(bucket)
+          .map(normalizeCode)
+          .filter((code) => uniqueFundCodes.includes(code))
+          .sort()
+          .forEach((code) => {
+            const value = bucket[code] || {};
+            const share = normalizeNumber(value.share);
+            const cost = normalizeNumber(value.cost);
+            if (share === null && cost === null) return;
+            inner[code] = { share, cost };
+          });
+        if (Object.keys(inner).length) groupHoldingsNorm[gid] = inner;
+      });
+
+    const pendingTrades = Array.isArray(payload.pendingTrades)
+      ? payload.pendingTrades
+          .map((trade) => {
+            const fundCode = normalizeCode(trade?.fundCode);
+            if (!fundCode) return null;
+            const row = {
+              id: trade?.id ? String(trade.id) : '',
+              fundCode,
+              type: trade?.type || '',
+              share: normalizeNumber(trade?.share),
+              amount: normalizeNumber(trade?.amount),
+              feeRate: normalizeNumber(trade?.feeRate),
+              feeMode: trade?.feeMode || '',
+              feeValue: normalizeNumber(trade?.feeValue),
+              date: trade?.date || '',
+              isAfter3pm: !!trade?.isAfter3pm,
+              isDca: !!trade?.isDca,
+            };
+            const g = trade?.groupId != null && trade.groupId !== '' ? normalizeCode(trade.groupId) : null;
+            if (g) {
+              if (!validGroupIds.has(g)) return null;
+              row.groupId = g;
+            }
+            return row;
+          })
+          .filter((trade) => trade && uniqueFundCodes.includes(trade.fundCode))
+          .sort((a, b) => {
+            const gidA = a.groupId || '';
+            const gidB = b.groupId || '';
+            const keyA = a.id || `${gidA}|${a.fundCode}|${a.type}|${a.date}|${a.share ?? ''}|${a.amount ?? ''}|${a.feeMode}|${a.feeValue ?? ''}|${a.feeRate ?? ''}|${a.isAfter3pm ? 1 : 0}|${a.isDca ? 1 : 0}`;
+            const keyB = b.id || `${gidB}|${b.fundCode}|${b.type}|${b.date}|${b.share ?? ''}|${b.amount ?? ''}|${b.feeMode}|${b.feeValue ?? ''}|${b.feeRate ?? ''}|${b.isAfter3pm ? 1 : 0}|${b.isDca ? 1 : 0}`;
+            return keyA.localeCompare(keyB);
+          })
+      : [];
+
+    const transactionsSource = isPlainObject(payload.transactions) ? payload.transactions : {};
+    const transactions = {};
+    Object.keys(transactionsSource)
+      .map(normalizeCode)
+      .filter((code) => uniqueFundCodes.includes(code))
+      .sort()
+      .forEach((code) => {
+        const list = Array.isArray(transactionsSource[code]) ? transactionsSource[code] : [];
+        const normalized = list
+          .map((t) => {
+            const id = t?.id ? String(t.id) : '';
+            const type = t?.type || '';
+            const share = normalizeNumber(t?.share);
+            const amount = normalizeNumber(t?.amount);
+            const price = normalizeNumber(t?.price);
+            const date = t?.date || '';
+            const timestamp = Number.isFinite(t?.timestamp) ? t.timestamp : 0;
+            const isDca = !!t?.isDca;
+            const isHistoryOnly = !!t?.isHistoryOnly;
+            const row = { id, type, share, amount, price, date, timestamp, isDca, isHistoryOnly };
+            const g = t?.groupId != null && t.groupId !== '' ? normalizeCode(t.groupId) : null;
+            if (g) {
+              if (!validGroupIds.has(g)) return null;
+              row.groupId = g;
+            }
+            return row;
+          })
+          .filter((t) => t && (t.id || t.timestamp))
+          .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        if (normalized.length > 0) transactions[code] = normalized;
+      });
+
+    const dcaScoped = migrateDcaPlansToScoped(isPlainObject(payload.dcaPlans) ? payload.dcaPlans : {});
+    const dcaPlans = {};
+    Object.keys(dcaScoped)
+      .sort()
+      .forEach((scopeKeyRaw) => {
+        const scopeKey = normalizeCode(scopeKeyRaw);
+        if (scopeKey !== DCA_SCOPE_GLOBAL && !validGroupIds.has(scopeKey)) return;
+        const bucket = dcaScoped[scopeKeyRaw];
+        if (!isPlainObject(bucket)) return;
+        const inner = {};
+        Object.keys(bucket)
+          .map(normalizeCode)
+          .filter((code) => uniqueFundCodes.includes(code))
+          .sort()
+          .forEach((code) => {
+            const plan = bucket[code] || {};
+            const amount = normalizeNumber(plan.amount);
+            const feeRate = normalizeNumber(plan.feeRate);
+            const cycle = ['daily', 'weekly', 'biweekly', 'monthly'].includes(plan.cycle) ? plan.cycle : '';
+            const firstDate = plan.firstDate ? String(plan.firstDate) : '';
+            const enabled = !!plan.enabled;
+            const weeklyDay = normalizeNumber(plan.weeklyDay);
+            const monthlyDay = normalizeNumber(plan.monthlyDay);
+            const lastDate = plan.lastDate ? String(plan.lastDate) : '';
+            if (amount === null && feeRate === null && !cycle && !firstDate && !enabled && weeklyDay === null && monthlyDay === null && !lastDate) return;
+            inner[code] = {
+              amount,
+              feeRate,
+              cycle,
+              firstDate,
+              enabled,
+              weeklyDay: weeklyDay !== null ? weeklyDay : null,
+              monthlyDay: monthlyDay !== null ? monthlyDay : null,
+              lastDate
+            };
+          });
+        if (Object.keys(inner).length) dcaPlans[scopeKey] = inner;
+      });
+
+    const customSettings = isPlainObject(payload.customSettings) ? payload.customSettings : {};
+    const fundDailyEarningsSource = normalizeFundDailyEarningsScoped(payload.fundDailyEarnings);
+    const fundDailyEarningsSig = Object.keys(fundDailyEarningsSource)
+      .sort()
+      .flatMap((scopeKey) => {
+        const bucket = fundDailyEarningsSource[scopeKey];
+        if (!isPlainObject(bucket)) return [];
+        return Object.keys(bucket)
+          .map(normalizeCode)
+          .filter((code) => uniqueFundCodes.includes(code))
+          .sort()
+          .map((code) => {
+            const list = Array.isArray(bucket[code]) ? bucket[code] : [];
+            const last = list.length ? list[list.length - 1] : null;
+            const date = last?.date ? String(last.date) : '';
+            const earnings = Number(last?.earnings);
+            return `${scopeKey}|${code}|${date}|${Number.isFinite(earnings) ? earnings.toFixed(2) : ''}|${list.length}`;
+          });
+      });
+
+    const tagRows = Array.isArray(payload.tags) ? payload.tags : [];
+    const tagsSig = tagRows
+      .map((r) => {
+        const codes = getFundCodesFromTagRecord(r)
+          .map((c) => normalizeCode(c))
+          .filter(Boolean)
+          .sort()
+          .join(',');
+        return `${codes}|${String(r?.id ?? '')}|${String(r?.name ?? '')}|${String(r?.theme ?? '')}`;
+      })
+      .sort()
+      .join('\n');
+
+    return JSON.stringify({
+      funds: uniqueFundCodes,
+      tagsSig,
+      favorites,
+      groups,
+      collapsedCodes,
+      collapsedTrends,
+      refreshMs: Number.isFinite(payload.refreshMs) ? payload.refreshMs : 30000,
+      holdings,
+      groupHoldings: groupHoldingsNorm,
+      pendingTrades,
+      transactions,
+      dcaPlans,
+      customSettings,
+      fundDailyEarningsSig
+    });
+  }
+
+  const collectLocalPayload = (keys = null) => {
+    try {
+      const all = {};
+      // 不包含 fundValuationTimeseries（作为频繁更新数据，仅在全量同步或特定触发时同步，不加入实时同步键列表）
+      if (!keys || keys.has('fundValuationTimeseries')) {
+        all.fundValuationTimeseries = storageStore.getItem('fundValuationTimeseries', {});
+      }
+      if (!keys || keys.has('funds')) {
+        all.funds = storageStore.getItem('funds', []);
+      }
+      if (!keys || keys.has('favorites')) {
+        all.favorites = storageStore.getItem('favorites', []);
+      }
+      if (!keys || keys.has('groups')) {
+        all.groups = storageStore.getItem('groups', []);
+      }
+      if (!keys || keys.has('collapsedCodes')) {
+        all.collapsedCodes = storageStore.getItem('collapsedCodes', []);
+      }
+      if (!keys || keys.has('collapsedTrends')) {
+        all.collapsedTrends = storageStore.getItem('collapsedTrends', []);
+      }
+      if (!keys || keys.has('collapsedEarnings')) {
+        all.collapsedEarnings = storageStore.getItem('collapsedEarnings', []);
+      }
+      if (!keys || keys.has('refreshMs')) {
+        all.refreshMs = storageStore.getItem('refreshMs', 30000);
+      }
+      if (!keys || keys.has('holdings')) {
+        all.holdings = storageStore.getItem('holdings', {});
+      }
+      if (!keys || keys.has('groupHoldings')) {
+        all.groupHoldings = storageStore.getItem('groupHoldings', {});
+      }
+      if (!keys || keys.has('pendingTrades')) {
+        all.pendingTrades = storageStore.getItem('pendingTrades', []);
+      }
+      if (!keys || keys.has('transactions')) {
+        all.transactions = storageStore.getItem('transactions', {});
+      }
+      if (!keys || keys.has('dcaPlans')) {
+        all.dcaPlans = storageStore.getItem('dcaPlans', {});
+      }
+      if (!keys || keys.has('customSettings')) {
+        all.customSettings = storageStore.getItem('customSettings', {});
+      }
+      if (!keys || keys.has('fundDailyEarnings')) {
+        all.fundDailyEarnings = storageStore.getItem('fundDailyEarnings', {});
+      }
+      if (!keys || keys.has('tags')) {
+        all.tags = storageStore.getItem('tags', []);
+      }
+      // fundTagLists 已废弃：基金-标签归属仅由 tags.fundCodes 推导
+
+      // 如果是全量收集（keys 为 null），进行完整的数据清洗和验证逻辑
+      if (!keys) {
+        all.funds = Array.isArray(all.funds) ? all.funds.map(stripLegacyTagsFromFundObject) : [];
+        const fundCodes = new Set(
+          Array.isArray(all.funds)
+            ? all.funds.map((f) => f?.code).filter(Boolean)
+            : []
+        );
+
+        const cleanedHoldings = isPlainObject(all.holdings)
+          ? Object.entries(all.holdings).reduce((acc, [code, value]) => {
+            if (!fundCodes.has(code) || !isPlainObject(value)) return acc;
+            const parsedShare = isNumber(value.share)
+              ? value.share
+              : isString(value.share)
+                ? Number(value.share)
+                : NaN;
+            const parsedCost = isNumber(value.cost)
+              ? value.cost
+              : isString(value.cost)
+                ? Number(value.cost)
+                : NaN;
+            const nextShare = Number.isFinite(parsedShare) ? parsedShare : null;
+            const nextCost = Number.isFinite(parsedCost) ? parsedCost : null;
+            if (nextShare === null && nextCost === null) return acc;
+            acc[code] = {
+              ...value,
+              share: nextShare,
+              cost: nextCost
+            };
+            return acc;
+          }, {})
+          : {};
+
+        const cleanedFavorites = Array.isArray(all.favorites)
+          ? all.favorites.filter((code) => fundCodes.has(code))
+          : [];
+        const cleanedCollapsed = Array.isArray(all.collapsedCodes)
+          ? all.collapsedCodes.filter((code) => fundCodes.has(code))
+          : [];
+        const cleanedCollapsedTrends = Array.isArray(all.collapsedTrends)
+          ? all.collapsedTrends.filter((code) => fundCodes.has(code))
+          : [];
+        const cleanedCollapsedEarnings = Array.isArray(all.collapsedEarnings)
+          ? all.collapsedEarnings.filter((code) => fundCodes.has(code))
+          : [];
+        const cleanedGroups = Array.isArray(all.groups)
+          ? all.groups.map(g => ({
+              ...g,
+              codes: Array.isArray(g.codes) ? g.codes.filter(c => fundCodes.has(c)) : []
+            }))
+          : [];
+
+        const validGroupIdSet = new Set(cleanedGroups.map((g) => g?.id).filter(Boolean));
+
+        const cleanedGroupHoldings = isPlainObject(all.groupHoldings)
+          ? Object.entries(all.groupHoldings).reduce((acc, [gid, bucket]) => {
+              if (!validGroupIdSet.has(gid) || !isPlainObject(bucket)) return acc;
+              const inner = Object.entries(bucket).reduce((bacc, [code, value]) => {
+                if (!fundCodes.has(code) || !isPlainObject(value)) return bacc;
+                const parsedShare = isNumber(value.share)
+                  ? value.share
+                  : isString(value.share)
+                    ? Number(value.share)
+                    : NaN;
+                const parsedCost = isNumber(value.cost)
+                  ? value.cost
+                  : isString(value.cost)
+                    ? Number(value.cost)
+                    : NaN;
+                const nextShare = Number.isFinite(parsedShare) ? parsedShare : null;
+                const nextCost = Number.isFinite(parsedCost) ? parsedCost : null;
+                if (nextShare === null && nextCost === null) return bacc;
+                bacc[code] = {
+                  ...value,
+                  share: nextShare,
+                  cost: nextCost
+                };
+                return bacc;
+              }, {});
+              if (Object.keys(inner).length) acc[gid] = inner;
+              return acc;
+            }, {})
+          : {};
+
+        const scopedDca = migrateDcaPlansToScoped(isPlainObject(all.dcaPlans) ? all.dcaPlans : {});
+        const cleanedDcaPlans = Object.entries(scopedDca).reduce((acc, [scopeKey, bucket]) => {
+          const sk = String(scopeKey);
+          if (sk !== DCA_SCOPE_GLOBAL && !validGroupIdSet.has(sk)) return acc;
+          if (!isPlainObject(bucket)) return acc;
+          const inner = Object.entries(bucket).reduce((bacc, [code, plan]) => {
+            if (!fundCodes.has(code) || !isPlainObject(plan)) return bacc;
+            bacc[code] = plan;
+            return bacc;
+          }, {});
+          if (Object.keys(inner).length) acc[sk] = inner;
+          return acc;
+        }, {});
+        if (!cleanedDcaPlans[DCA_SCOPE_GLOBAL]) cleanedDcaPlans[DCA_SCOPE_GLOBAL] = {};
+
+        const dailyScoped = normalizeFundDailyEarningsScoped(all.fundDailyEarnings);
+        const cleanedFundDailyEarnings = Object.entries(dailyScoped).reduce((acc, [scopeKey, bucket]) => {
+          if (!isPlainObject(bucket)) return acc;
+          if (scopeKey !== DAILY_EARNINGS_SCOPE_ALL && !validGroupIdSet.has(scopeKey)) return acc;
+          const normalizedBucket = Object.entries(bucket).reduce((bacc, [code, list]) => {
+            if (!fundCodes.has(code) || !Array.isArray(list)) return bacc;
+            const normalized = list
+              .map((item) => {
+                const date = item?.date ? String(item.date) : '';
+                const earnings = Number(item?.earnings);
+                const rateRaw = item?.rate;
+                const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
+                  ? null
+                  : Number(rateRaw);
+                const baseCostAmountRaw = item?.baseCostAmount;
+                const baseCostAmount = baseCostAmountRaw === null || baseCostAmountRaw === undefined || baseCostAmountRaw === ''
+                  ? null
+                  : Number(baseCostAmountRaw);
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+                if (!Number.isFinite(earnings)) return null;
+                return {
+                  date,
+                  earnings,
+                  ...(Number.isFinite(rate) ? { rate } : { rate: null }),
+                  ...(Number.isFinite(baseCostAmount) && baseCostAmount > 0 ? { baseCostAmount } : { baseCostAmount: null }),
+                };
+              })
+              .filter(Boolean)
+              .sort((a, b) => a.date.localeCompare(b.date));
+            if (normalized.length === 0) return bacc;
+            bacc[code] = normalized;
+            return bacc;
+          }, {});
+          if (Object.keys(normalizedBucket).length === 0) return acc;
+          acc[scopeKey] = normalizedBucket;
+          return acc;
+        }, {});
+
+        const cleanedTags = Array.isArray(all.tags)
+          ? all.tags
+            .map((r) => {
+              const codes = getFundCodesFromTagRecord(r).filter((c) => fundCodes.has(c));
+              const name = String(r?.name ?? '').trim();
+              if (!name) return null;
+              return sanitizeTagRowForStorage({
+                ...r,
+                id: String(r?.id ?? '').trim() || uuidv4(),
+                name,
+                theme: String(r?.theme ?? '').trim() || DEFAULT_FUND_TAG_THEME,
+                fundCodes: codes,
+              });
+            })
+            .filter(Boolean)
+          : [];
+
+        // fundTagLists 已废弃：不再清洗/返回该字段
+
+        return {
+          funds: all.funds,
+          tags: cleanedTags,
+          favorites: cleanedFavorites,
+          groups: cleanedGroups,
+          collapsedCodes: cleanedCollapsed,
+          collapsedTrends: cleanedCollapsedTrends,
+          collapsedEarnings: cleanedCollapsedEarnings,
+          refreshMs: all.refreshMs,
+          holdings: cleanedHoldings,
+          groupHoldings: cleanedGroupHoldings,
+          pendingTrades: all.pendingTrades,
+          transactions: all.transactions,
+          dcaPlans: cleanedDcaPlans,
+          customSettings: isPlainObject(all.customSettings) ? all.customSettings : {},
+          fundDailyEarnings: cleanedFundDailyEarnings,
+          fundValuationTimeseries: isPlainObject(all.fundValuationTimeseries) ? all.fundValuationTimeseries : {}
+        };
+      }
+
+      // 如果是部分收集，直接返回读取到的字段
+      return all;
+    } catch {
+      // 安全回退：如果是增量更新失败，返回空对象避免覆盖；全量更新则返回默认空配置
+      if (keys) return {};
+      return {
+        funds: [],
+        tags: [],
+        favorites: [],
+        groups: [],
+        collapsedCodes: [],
+        collapsedTrends: [],
+        collapsedEarnings: [],
+        refreshMs: 30000,
+        holdings: {},
+        groupHoldings: {},
+        pendingTrades: [],
+        transactions: {},
+        dcaPlans: { [DCA_SCOPE_GLOBAL]: {} },
+        customSettings: {},
+        exportedAt: nowInTz().toISOString()
+      };
+    }
+  };
+
+  const mergeValuationFieldsByGztime = (localFund, cloudFund) => {
+    if (!isPlainObject(cloudFund)) return cloudFund;
+    if (!isPlainObject(localFund)) return cloudFund;
+
+    const localGzRaw = localFund.gztime;
+    const cloudGzRaw = cloudFund.gztime;
+
+    if (!isString(localGzRaw) || !isString(cloudGzRaw)) return cloudFund;
+
+    const localGz = toTz(localGzRaw);
+    const cloudGz = toTz(cloudGzRaw);
+    if (!localGz?.isValid?.() || !cloudGz?.isValid?.()) return cloudFund;
+
+    if (!localGz.isAfter(cloudGz)) return cloudFund;
+
+    const patch = {};
+    if (!isNil(localFund.gsz)) patch.gsz = localFund.gsz;
+    if (!isNil(localFund.gszzl)) patch.gszzl = localFund.gszzl;
+    if (!isNil(localFund.gztime)) patch.gztime = localFund.gztime;
+
+    return { ...cloudFund, ...patch };
+  };
+
+  const applyCloudConfig = async (cloudData, cloudUpdatedAt, options = {}) => {
+    if (!isPlainObject(cloudData)) return;
+    skipSyncRef.current = true;
+    try {
+      if (cloudUpdatedAt) {
+        storageHelper.setItem('localUpdatedAt', cloudUpdatedAt);
+      }
+      let localFundsForMerge = [];
+      try {
+        localFundsForMerge = storageStore.getItem('funds', []);
+      } catch { }
+      const localFundByCode = new Map(
+        localFundsForMerge
+          .map(stripLegacyTagsFromFundObject)
+          .filter((f) => f && f.code != null)
+          .map((f) => [String(f.code), f])
+      );
+
+      const cloudFunds = Array.isArray(cloudData.funds)
+        ? dedupeByCode(cloudData.funds.map(stripLegacyTagsFromFundObject))
+        : [];
+      const nextFunds = cloudFunds.map((cf) => mergeValuationFieldsByGztime(localFundByCode.get(String(cf?.code)), cf));
+      setFunds(nextFunds);
+      const nextFundCodes = new Set(nextFunds.map((f) => f.code));
+
+      if (hasOwn(cloudData, 'tags')) {
+        const cleanedTagRows = (Array.isArray(cloudData.tags) ? cloudData.tags : [])
+          .map((r) => {
+            const codes = getFundCodesFromTagRecord(r).filter((c) => nextFundCodes.has(c));
+            const name = String(r?.name ?? '').trim();
+            if (!name) return null;
+            return sanitizeTagRowForStorage({
+              ...r,
+              id: String(r?.id ?? '').trim() || uuidv4(),
+              name,
+              theme: String(r?.theme ?? '').trim() || DEFAULT_FUND_TAG_THEME,
+              fundCodes: codes,
+            });
+          })
+          .filter(Boolean);
+        setFundTagRecords(cleanedTagRows);
+        storageHelper.setItem('tags', JSON.stringify(cleanedTagRows));
+      } else {
+        try {
+          const localTags = storageStore.getItem('tags', []);
+          const normalized = localTags
+            .map((r) => {
+              const codes = getFundCodesFromTagRecord(r).filter((c) => nextFundCodes.has(c));
+              return sanitizeTagRowForStorage({
+                ...r,
+                id: String(r.id || '').trim() || uuidv4(),
+                name: String(r.name || '').trim(),
+                theme: String(r.theme || '').trim() || DEFAULT_FUND_TAG_THEME,
+                fundCodes: codes,
+              });
+            })
+            .filter(Boolean);
+          setFundTagRecords(normalized);
+        } catch {
+          setFundTagRecords([]);
+        }
+      }
+
+      // fundTagLists 已废弃：基金-标签归属仅由 tags.fundCodes 推导
+
+      // favorites 必须是字符串 code，且必须存在于 funds 中
+      const nextFavorites = cleanCodeArray(cloudData.favorites, nextFundCodes);
+      setFavorites(new Set(nextFavorites));
+
+      const nextGroups = Array.isArray(cloudData.groups)
+        ? cloudData.groups
+            .map((g) => ({
+              ...g,
+              id: String(g?.id ?? '').trim() || uuidv4(),
+              name: String(g?.name ?? '').trim(),
+              codes: cleanCodeArray(g?.codes, nextFundCodes),
+            }))
+            // 保留“空分组”（codes 允许为空）；仅丢弃无名称分组，避免云端应用时误删用户刚新建的分组
+            .filter((g) => g.name.length > 0)
+        : [];
+      setGroups(nextGroups);
+
+      const nextCollapsed = Array.isArray(cloudData.collapsedCodes) ? cloudData.collapsedCodes : [];
+      setCollapsedCodes(new Set(nextCollapsed));
+
+      if (Array.isArray(cloudData.collapsedTrends)) {
+        setCollapsedTrends(new Set(cloudData.collapsedTrends));
+      }
+      if (Array.isArray(cloudData.collapsedEarnings)) {
+        setCollapsedEarnings(new Set(cloudData.collapsedEarnings));
+      }
+
+      const nextRefreshMs = Number.isFinite(cloudData.refreshMs) && cloudData.refreshMs >= 5000 ? cloudData.refreshMs : 30000;
+      setRefreshMs(nextRefreshMs);
+      setTempSeconds(Math.round(nextRefreshMs / 1000));
+
+      const nextHoldings = isPlainObject(cloudData.holdings) ? cloudData.holdings : {};
+      setHoldings(nextHoldings);
+
+      const cloudGroupIds = new Set(nextGroups.map((g) => g?.id).filter(Boolean));
+
+      let nextGroupHoldings = isPlainObject(cloudData.groupHoldings) ? cloudData.groupHoldings : {};
+      const seedAfterCloud = seedGroupHoldingsFromGlobal(nextHoldings, nextGroups, nextGroupHoldings);
+      if (seedAfterCloud.changed) {
+        nextGroupHoldings = seedAfterCloud.next;
+      }
+      setGroupHoldings(nextGroupHoldings);
+
+      // 兼容：旧版本云端 data 可能不包含 pendingTrades / transactions / dcaPlans 字段。
+      // 若字段缺失，必须保留本地，避免“更新后云端覆盖导致记录清空”。
+      if (hasOwn(cloudData, 'pendingTrades')) {
+        const nextPendingTrades = Array.isArray(cloudData.pendingTrades)
+          ? cloudData.pendingTrades.filter((trade) => {
+              if (!trade || !nextFundCodes.has(trade.fundCode)) return false;
+              if (trade.groupId && !cloudGroupIds.has(trade.groupId)) return false;
+              return true;
+            })
+          : [];
+        setPendingTrades(nextPendingTrades);
+      } else {
+        try {
+          const localPending = storageStore.getItem('pendingTrades', []);
+          setPendingTrades(Array.isArray(localPending) ? localPending : []);
+        } catch { }
+      }
+
+      if (hasOwn(cloudData, 'transactions')) {
+        const nextTransactions = isPlainObject(cloudData.transactions) ? cloudData.transactions : {};
+        setTransactions(nextTransactions);
+      } else {
+        try {
+          const localTx = storageStore.getItem('transactions', {});
+          setTransactions(isPlainObject(localTx) ? localTx : {});
+        } catch { }
+      }
+
+      if (hasOwn(cloudData, 'dcaPlans')) {
+        const cloudDcaScoped = migrateDcaPlansToScoped(isPlainObject(cloudData.dcaPlans) ? cloudData.dcaPlans : {});
+        const nextDcaPlans = {};
+        Object.entries(cloudDcaScoped).forEach(([scopeKey, bucket]) => {
+          if (scopeKey !== DCA_SCOPE_GLOBAL && !cloudGroupIds.has(scopeKey)) return;
+          if (!isPlainObject(bucket)) return;
+          const inner = {};
+          Object.entries(bucket).forEach(([code, plan]) => {
+            if (!nextFundCodes.has(code) || !isPlainObject(plan)) return;
+            inner[code] = plan;
+          });
+          if (Object.keys(inner).length) nextDcaPlans[scopeKey] = inner;
+        });
+        if (!nextDcaPlans[DCA_SCOPE_GLOBAL]) nextDcaPlans[DCA_SCOPE_GLOBAL] = {};
+        setDcaPlans(nextDcaPlans);
+      } else {
+        try {
+          const localDca = storageStore.getItem('dcaPlans', {});
+          setDcaPlans(migrateDcaPlansToScoped(isPlainObject(localDca) ? localDca : {}));
+        } catch { }
+      }
+
+      const cloudDaily = normalizeFundDailyEarningsScoped(cloudData.fundDailyEarnings);
+      const nextFundDailyEarnings = Object.entries(cloudDaily).reduce((acc, [scopeKey, bucket]) => {
+        if (!isPlainObject(bucket)) return acc;
+        if (scopeKey !== DAILY_EARNINGS_SCOPE_ALL && !cloudGroupIds.has(scopeKey)) return acc;
+        const normalizedBucket = Object.entries(bucket).reduce((bacc, [code, list]) => {
+          if (!nextFundCodes.has(code) || !Array.isArray(list)) return bacc;
+          const normalized = list
+            .map((item) => {
+              const date = item?.date ? String(item.date) : '';
+              const earnings = Number(item?.earnings);
+              const rateRaw = item?.rate;
+              const rate = rateRaw === null || rateRaw === undefined || rateRaw === ''
+                ? null
+                : Number(rateRaw);
+              const baseCostAmountRaw = item?.baseCostAmount;
+              const baseCostAmount = baseCostAmountRaw === null || baseCostAmountRaw === undefined || baseCostAmountRaw === ''
+                ? null
+                : Number(baseCostAmountRaw);
+              if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+              if (!Number.isFinite(earnings)) return null;
+              return {
+                date,
+                earnings,
+                ...(Number.isFinite(rate) ? { rate } : { rate: null }),
+                ...(Number.isFinite(baseCostAmount) && baseCostAmount > 0 ? { baseCostAmount } : { baseCostAmount: null }),
+              };
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.date.localeCompare(b.date));
+          if (normalized.length === 0) return bacc;
+          bacc[code] = normalized;
+          return bacc;
+        }, {});
+        if (Object.keys(normalizedBucket).length === 0) return acc;
+        acc[scopeKey] = normalizedBucket;
+        return acc;
+      }, {});
+      setFundDailyEarnings(nextFundDailyEarnings);
+
+      if (hasOwn(cloudData, 'fundValuationTimeseries')) {
+        const nextTimeseries = isPlainObject(cloudData.fundValuationTimeseries) ? cloudData.fundValuationTimeseries : {};
+        const localTimeseries = storageStore.getItem('fundValuationTimeseries', {});
+        const mergedTimeseries = { ...localTimeseries };
+
+        // 兼容旧格式（扁平）和新格式（分数据源）
+        const mergeSeries = (cloudArr, localArr) => {
+          const pointsMap = new Map();
+          localArr.forEach(pt => {
+            if (pt && pt.date && pt.time) pointsMap.set(`${pt.date}_${pt.time}`, pt);
+          });
+          cloudArr.forEach(pt => {
+            if (pt && pt.date && pt.time) pointsMap.set(`${pt.date}_${pt.time}`, pt);
+          });
+          let mergedArr = Array.from(pointsMap.values()).sort((a, b) => {
+            if (a.date !== b.date) return a.date.localeCompare(b.date);
+            return a.time.localeCompare(b.time);
+          });
+          const maxDate = mergedArr.reduce((max, pt) => (pt.date > max ? pt.date : max), '');
+          if (maxDate) mergedArr = mergedArr.filter(pt => pt.date === maxDate);
+          return mergedArr;
+        };
+
+        Object.keys(nextTimeseries).forEach(code => {
+          if (!nextFundCodes.has(code)) return;
+          const cloudEntry = nextTimeseries[code];
+          const localEntry = mergedTimeseries[code];
+          // 旧格式：{ [code]: [...] }
+          if (Array.isArray(cloudEntry)) {
+            const localArr = Array.isArray(localEntry) ? localEntry : [];
+            mergedTimeseries[code] = { '1': mergeSeries(cloudEntry, localArr) };
+            return;
+          }
+          // 新格式：{ [code]: { [ds]: [...] } }
+          if (isPlainObject(cloudEntry)) {
+            const localDsMap = isPlainObject(localEntry) ? localEntry : {};
+            const mergedDsMap = { ...localDsMap };
+            Object.keys(cloudEntry).forEach(ds => {
+              if (!Array.isArray(cloudEntry[ds])) return;
+              const localArr = Array.isArray(mergedDsMap[ds]) ? mergedDsMap[ds] : [];
+              mergedDsMap[ds] = mergeSeries(cloudEntry[ds], localArr);
+            });
+            mergedTimeseries[code] = mergedDsMap;
+          }
+        });
+
+        const cleanedTimeseries = {};
+        Object.keys(mergedTimeseries).forEach(code => {
+          if (nextFundCodes.has(code)) {
+            cleanedTimeseries[code] = mergedTimeseries[code];
+          }
+        });
+        storageStore.setItem('fundValuationTimeseries', JSON.stringify(cleanedTimeseries));
+      }
+
+      if (isPlainObject(cloudData.customSettings)) {
+        try {
+          const merged = { ...(customSettings || {}), ...cloudData.customSettings };
+          setCustomSettings(merged);
+          if (
+            typeof merged.localSortDisplayMode === 'string' &&
+            SORT_DISPLAY_MODES.has(merged.localSortDisplayMode)
+          ) {
+            setPcSortDisplayMode(merged.localSortDisplayMode);
+            setMobileSortDisplayMode(merged.localSortDisplayMode);
+          } else {
+            if (typeof merged.pcLocalSortDisplayMode === 'string' && SORT_DISPLAY_MODES.has(merged.pcLocalSortDisplayMode)) {
+              setPcSortDisplayMode(merged.pcLocalSortDisplayMode);
+            }
+            if (typeof merged.mobileLocalSortDisplayMode === 'string' && SORT_DISPLAY_MODES.has(merged.mobileLocalSortDisplayMode)) {
+              setMobileSortDisplayMode(merged.mobileLocalSortDisplayMode);
+            }
+          }
+        } catch { }
+      }
+
+      if (options.forceTakeover) {
+        // 在耗时的 refreshAll 之前先执行一次强制同步以夺回设备活跃锁，并弹出提示
+        const currentUserId = options.userId || userIdRef.current || user?.id;
+        if (currentUserId) {
+          await syncUserConfig(currentUserId, true, null, false, { forceTakeover: true });
+        }
+      }
+
+      if (nextFunds.length) {
+        const codes = Array.from(new Set(nextFunds.map((f) => f.code)));
+        if (codes.length) await refreshAll(codes);
+        // 刷新完成后,强制同步本地localStorage 的 funds 数据到云端
+        const currentUserId = userIdRef.current || user?.id;
+        if (currentUserId) {
+          try {
+            const latestFunds = storageStore.getItem('funds', []);
+            const localSig = getFundCodesSignature(latestFunds, ['gztime']);
+            const cloudSig = getFundCodesSignature(Array.isArray(cloudData.funds) ? cloudData.funds : [], ['gztime']);
+            if (localSig !== cloudSig) {
+              await syncUserConfig(
+                currentUserId,
+                false,
+                { funds: Array.isArray(latestFunds) ? latestFunds : [] },
+                true,
+                options
+              );
+            }
+          } catch (e) {
+            console.error('刷新后强制同步 funds 到云端失败', e);
+          }
+        }
+      }
+
+      const payload = collectLocalPayload();
+      lastSyncedRef.current = getComparablePayload(payload);
+    } finally {
+      skipSyncRef.current = false;
+    }
+  };
+
+  const fetchCloudConfig = async (userId, checkConflict = false, options = {}) => {
+    if (!userId) return;
+    try {
+      // 一次查询同时拿到 meta 与 data，方便两种模式复用
+      const { data: meta, error: metaError } = await withRetry(() => supabase
+        .from('user_configs')
+        .select('id, data, updated_at')
+        .eq('user_id', userId)
+        .maybeSingle());
+
+      if (metaError) throw metaError;
+
+      if (!meta?.id) {
+        const { error: insertError } = await withRetry(() => supabase
+          .from('user_configs')
+          .insert({ user_id: userId }));
+        if (insertError) throw insertError;
+        setCloudConfigModal({ open: true, userId, type: 'empty' });
+        return;
+      }
+
+      // 冲突检查模式：使用 meta.data 弹出冲突确认弹窗
+      if (checkConflict) {
+        setCloudConfigModal({ open: true, userId, type: 'conflict', cloudData: meta.data });
+        return;
+      }
+
+      // 非冲突检查模式：直接复用上方查询到的 meta 数据，覆盖本地
+      if (meta.data && isPlainObject(meta.data) && Object.keys(meta.data).length > 0) {
+        await applyCloudConfig(meta.data, meta.updated_at, { ...options, userId });
+        return;
+      }
+
+      setCloudConfigModal({ open: true, userId, type: 'empty' });
+    } catch (e) {
+      console.error('获取云端配置失败', e);
+      skipSyncRef.current = false;
+    }
+  };
+
+  const syncUserConfig = async (userId, showTip = true, payload = null, isPartial = false, options = {}) => {
+    const forceTakeover = options?.forceTakeover || false;
+    if (!userId) {
+      showToast(`userId 不存在，请重新登录`, 'error');
+      return;
+    }
+    try {
+      setIsSyncing(true);
+      const baseData = payload || collectLocalPayload(); // Fallback to full sync if no payload
+      const now = nowInTz().toISOString();
+      let deviceId = deviceIdRef.current || '';
+      if (!deviceId) {
+        try {
+          const key = 'rtfDeviceId';
+          deviceId = storageStore.getItem(key) || '';
+          if (!deviceId) {
+            deviceId = uuidv4();
+            storageStore.setItem(key, deviceId);
+          }
+          deviceIdRef.current = deviceId;
+        } catch {
+          deviceId = uuidv4();
+          deviceIdRef.current = deviceId;
+        }
+      }
+      const dataToSync = isPlainObject(baseData)
+        ? {
+            ...baseData,
+            _syncMeta: {
+              ...(isPlainObject(baseData._syncMeta) ? baseData._syncMeta : {}),
+              deviceId,
+              at: now,
+            }
+          }
+        : { _syncMeta: { deviceId, at: now } };
+
+      if (isPartial) {
+        // 增量更新：使用 RPC 调用
+        const { error: rpcError } = await withRetry(() => supabase.rpc('update_user_config_partial', {
+          payload: dataToSync,
+          p_last_device_id: deviceId,
+          p_force_takeover: forceTakeover
+        }));
+
+        if (rpcError) {
+          if (rpcError.message?.includes('DEVICE_CONFLICT')) {
+            setIsSyncing(false);
+            skipSyncRef.current = true;
+            setDeviceConflictModal({
+              open: true,
+              message: '您的账号已在其他设备登录。当前设备的同步已被拦截。是否确认拉取云端最新数据覆盖本地并恢复同步？',
+              userId,
+              payload,
+              isPartial
+            });
+            return;
+          }
+          console.error('增量同步失败，尝试全量同步', rpcError);
+          // RPC 失败回退到全量更新
+          const fullPayload = collectLocalPayload();
+          const { error: fullError } = await withRetry(() => supabase.rpc('update_user_config_full', {
+            payload: fullPayload,
+            p_last_device_id: deviceId,
+            p_force_takeover: forceTakeover
+          }));
+          if (fullError) {
+            if (fullError.message?.includes('DEVICE_CONFLICT')) {
+              setIsSyncing(false);
+              skipSyncRef.current = true;
+              setDeviceConflictModal({
+                open: true,
+                message: '您的账号已在其他设备登录。当前设备的同步已被拦截。是否确认拉取云端最新数据覆盖本地并恢复同步？',
+                userId,
+                payload,
+                isPartial
+              });
+              return;
+            }
+            throw fullError;
+          }
+        }
+      } else {
+        // 全量更新
+        const { error } = await withRetry(() => supabase.rpc('update_user_config_full', {
+          payload: dataToSync,
+          p_last_device_id: deviceId,
+          p_force_takeover: forceTakeover
+        }));
+        if (error) {
+          if (error.message?.includes('DEVICE_CONFLICT')) {
+            setIsSyncing(false);
+            skipSyncRef.current = true;
+            setDeviceConflictModal({
+              open: true,
+              message: '您的账号已在其他设备登录。当前设备的同步已被拦截。是否确认拉取云端最新数据覆盖本地并恢复同步？',
+              userId,
+              payload,
+              isPartial
+            });
+            return;
+          }
+          throw error;
+        }
+      }
+
+      storageHelper.setItem('localUpdatedAt', now);
+
+      if (forceTakeover) {
+        lastSyncedRef.current = getComparablePayload(dataToSync);
+      }
+
+      if (showTip) {
+        setSuccessModal({ open: true, message: '已同步云端配置' });
+      }
+    } catch (e) {
+      console.error('同步云端配置异常', e);
+      // 临时关闭同步异常提示
+      // showToast(`同步云端配置异常:${e}`, 'error');
+    } finally {
+      setIsSyncing(false);
+      skipSyncRef.current = false;
+    }
+  };
+
+  const handleSyncLocalConfig = async () => {
+    const cloudConfigModal = useModalStore.getState().cloudConfigModal;
+    const userId = cloudConfigModal.userId;
+    setCloudConfigModal({ open: false, userId: null });
+    await syncUserConfig(userId, true, null, false, { forceTakeover: true });
+  };
 
   const exportLocalData = async () => {
     try {
@@ -4905,7 +6516,7 @@ export default function HomePage() {
     handleScanPick: (e) => handleScanPick?.(e),
     handleFilesDrop: (e) => handleFilesDrop?.(e),
     toggleScannedCode: (code) => toggleScannedCode?.(code),
-    confirmScanImport: (targetGroupId, expandAfterAdd) => confirmScanImport?.(targetGroupId, expandAfterAdd),
+    confirmScanImport: () => confirmScanImport?.(),
     // 辅助函数
     getScopedHolding: (code, groupIdOverride) => getScopedHolding?.(code, groupIdOverride),
     getScopedGroupId: (groupIdOverride) => getScopedGroupId?.(groupIdOverride),
@@ -5198,6 +6809,12 @@ export default function HomePage() {
             onSync={() => user?.id && syncUserConfig(user.id)}
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenPortfolioEarnings={() => setPortfolioEarningsOpen(true)}
+            onOpenDashboard={() => {
+              window.location.href = '/dashboard.html';
+            }}
+            onOpenReview={() => {
+              window.location.href = '/review.html';
+            }}
             onOpenLogin={handleOpenLogin}
             onLogout={handleLogout}
             onLogoutConfirmOpenChange={setIsLogoutConfirmOpen}
@@ -5811,6 +7428,9 @@ export default function HomePage() {
           lastSyncDisplay={lastSyncTime ? dayjs(lastSyncTime).format('MM-DD HH:mm') : null}
           onLogin={handleOpenLogin}
           onMyEarnings={() => setPortfolioEarningsOpen(true)}
+          onReview={() => {
+            window.location.href = '/review.html';
+          }}
           onTutorial={() => {
             if (isMobile) {
               setTutorialDrawerOpen(true);

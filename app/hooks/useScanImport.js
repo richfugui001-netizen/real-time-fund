@@ -294,6 +294,16 @@ export function useScanImport({
   };
 
   const confirmScanImport = async (targetGroupId = 'all', expandAfterAdd = true) => {
+    const withTimeout = (promise, ms, message = '导入基金超时') => {
+      let timer = null;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      });
+      return Promise.race([promise, timeout]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+    };
+
     const parseAmount = (val) => {
       if (!val && val !== 0) return null;
       const num = parseFloat(String(val).replace(/,/g, ''));
@@ -338,7 +348,10 @@ export function useScanImport({
 
         const existed = funds.some(existing => existing.code === code);
         try {
-          const data = existed ? (funds.find((f) => f.code === code) || null) : await fetchFundData(code);
+          const data = existed
+            ? (funds.find((f) => f.code === code) || null)
+            : await withTimeout(fetchFundData(code), 20000, `导入基金 ${code} 超时`);
+          if (!data) throw new Error(`未获取到基金 ${code} 数据`);
           if (!existed && data) newFunds.push(data);
 
           const scannedFund = scannedFunds.find(f => f.code === code);
@@ -378,6 +391,19 @@ export function useScanImport({
           }
         });
         if (Object.keys(nextSeries).length > 0) setValuationSeries(prev => ({ ...prev, ...nextSeries }));
+
+        if (!expandAfterAdd) {
+          setCollapsedCodes(prev => {
+            const next = new Set(prev);
+            newCodesSet.forEach((code) => next.add(code));
+            return next;
+          });
+          setCollapsedTrends(prev => {
+            const next = new Set(prev);
+            newCodesSet.forEach((code) => next.add(code));
+            return next;
+          });
+        }
       }
 
       if (Object.keys(newHoldings).length > 0) {
@@ -389,19 +415,6 @@ export function useScanImport({
         } else {
           setHoldings(prev => ({ ...prev, ...newHoldings }));
         }
-      }
-
-      if (!expandAfterAdd) {
-        setCollapsedCodes(prev => {
-          const next = new Set(prev);
-          codes.forEach((code) => next.add(code));
-          return next;
-        });
-        setCollapsedTrends(prev => {
-          const next = new Set(prev);
-          codes.forEach((code) => next.add(code));
-          return next;
-        });
       }
 
       if (targetGroupId === 'fav') {

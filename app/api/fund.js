@@ -255,6 +255,67 @@ export const fetchEastmoneySectorQuotesBatch = async (secids, { cacheTime = SECT
   return results;
 };
 
+const EASTMONEY_BOARD_CACHE_MS = 60 * 1000;
+
+const fetchEastmoneyBoardRank = async ({ boardType = 'industry', direction = 'up', limit = 6, cacheTime = EASTMONEY_BOARD_CACHE_MS } = {}) => {
+  if (typeof fetch === 'undefined') return [];
+  const typeCode = boardType === 'concept' ? '3' : '2';
+  const sortOrder = direction === 'down' ? '0' : '1';
+  const size = Math.max(1, Math.min(20, Number(limit) || 6));
+  const cacheKey = `eastBoardRank:${typeCode}:${sortOrder}:${size}`;
+  const qc = getQueryClient();
+  const cached = qc.getQueryData(cacheKey);
+  if (cached !== undefined) return cached;
+
+  try {
+    const params = new URLSearchParams({
+      pn: '1',
+      pz: String(size),
+      po: sortOrder,
+      np: '1',
+      fltt: '2',
+      invt: '2',
+      fid: 'f3',
+      fs: `m:90+t:${typeCode}`,
+      fields: 'f12,f14,f3,f62,f128,f136',
+    });
+    const res = await fetch(`https://push2.eastmoney.com/api/qt/clist/get?${params.toString()}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+    const diff = json?.data?.diff;
+    const rows = Array.isArray(diff)
+      ? diff.map((item) => ({
+        code: item.f12 != null ? String(item.f12) : '',
+        name: item.f14 != null ? String(item.f14) : '',
+        pct: item.f3 != null && Number.isFinite(Number(item.f3)) ? Number(item.f3) : null,
+        mainInflow: item.f62 != null && Number.isFinite(Number(item.f62)) ? Number(item.f62) : null,
+        leaderName: item.f128 != null ? String(item.f128) : '',
+        leaderPct: item.f136 != null && Number.isFinite(Number(item.f136)) ? Number(item.f136) : null,
+      })).filter((item) => item.code && item.name)
+      : [];
+
+    qc.setQueryData(cacheKey, rows, { staleTime: cacheTime });
+    return rows;
+  } catch (e) {
+    qc.setQueryData(cacheKey, [], { staleTime: cacheTime });
+    return [];
+  }
+};
+
+/**
+ * 东方财富行业/概念板块强弱排行。
+ * @returns {Promise<{industryUp:Array, industryDown:Array, conceptUp:Array, conceptDown:Array}>}
+ */
+export const fetchEastmoneyBoardRanks = async ({ limit = 6 } = {}) => {
+  const [industryUp, industryDown, conceptUp, conceptDown] = await Promise.all([
+    fetchEastmoneyBoardRank({ boardType: 'industry', direction: 'up', limit }),
+    fetchEastmoneyBoardRank({ boardType: 'industry', direction: 'down', limit }),
+    fetchEastmoneyBoardRank({ boardType: 'concept', direction: 'up', limit }),
+    fetchEastmoneyBoardRank({ boardType: 'concept', direction: 'down', limit }),
+  ]);
+  return { industryUp, industryDown, conceptUp, conceptDown };
+};
+
 function normalizeEastmoneyScriptUrl(url) {
   let key = url;
   try {
@@ -267,9 +328,11 @@ function normalizeEastmoneyScriptUrl(url) {
   return key;
 }
 
+let eastmoneyF10ScriptQueue = Promise.resolve();
+
 /** 东方财富 F10 / FundArchives 等 JSONP（window.apidata），不做缓存；由 loadScript / fetchQuery 控制 staleTime */
 function runEastmoneyF10ScriptForApidata(url, timeoutMs = 10000) {
-  return new Promise((resolve) => {
+  const task = () => new Promise((resolve) => {
     const script = document.createElement('script');
     script.src = url;
     script.async = true;
@@ -307,6 +370,11 @@ function runEastmoneyF10ScriptForApidata(url, timeoutMs = 10000) {
 
     document.body.appendChild(script);
   });
+
+  // 该类接口固定写入全局 window.apidata，并发加载会互相覆盖；必须全局串行。
+  const queued = eastmoneyF10ScriptQueue.catch(() => {}).then(task);
+  eastmoneyF10ScriptQueue = queued.catch(() => {});
+  return queued;
 }
 
 export const loadScript = (url, options = {}) => {

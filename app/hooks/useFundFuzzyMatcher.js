@@ -207,20 +207,8 @@ export const useFundFuzzyMatcher = () => {
     return top1?.item?.code || null;
   }, [getAllFundFuse, parseFundQuerySignals]);
 
-  const searchFundsLocal = useCallback(async (query) => {
-    if (!query || String(query).trim().length < 2) return [];
-    const fuse = await getAllFundFuse();
-    const results = fuse.search(query, { limit: 20 });
-    return results.map(r => ({
-      CODE: r.item.code,
-      NAME: r.item.name,
-      TYPE: '基金' // 本地列表通常只有名称和代码
-    }));
-  }, [getAllFundFuse]);
-
   return {
     resolveFundCodeByFuzzy,
-    searchFundsLocal,
   };
 };
 
