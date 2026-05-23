@@ -6516,7 +6516,7 @@ export default function HomePage() {
     handleScanPick: (e) => handleScanPick?.(e),
     handleFilesDrop: (e) => handleFilesDrop?.(e),
     toggleScannedCode: (code) => toggleScannedCode?.(code),
-    confirmScanImport: () => confirmScanImport?.(),
+    confirmScanImport: (targetGroupId, expandAfterAdd) => confirmScanImport?.(targetGroupId, expandAfterAdd),
     // 辅助函数
     getScopedHolding: (code, groupIdOverride) => getScopedHolding?.(code, groupIdOverride),
     getScopedGroupId: (groupIdOverride) => getScopedGroupId?.(groupIdOverride),
