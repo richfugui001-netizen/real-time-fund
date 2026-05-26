@@ -77,9 +77,7 @@ export function useScanImport({
     setIsScanning(false);
     setScanProgress({ stage: 'ocr', current: 0, total: 0 });
     if (ocrWorkerRef.current) {
-      try {
-        ocrWorkerRef.current.terminate();
-      } catch (e) {}
+      import('../lib/ocr').then(({ terminateOcrWorker }) => terminateOcrWorker());
       ocrWorkerRef.current = null;
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -96,31 +94,8 @@ export function useScanImport({
     try {
       let worker = ocrWorkerRef.current;
       if (!worker) {
-        const cdnBases = [
-          'https://fastly.jsdelivr.net/npm',
-          'https://cdn.jsdelivr.net/npm',
-        ];
-        const coreCandidates = [
-          'tesseract-core-simd-lstm.wasm.js',
-          'tesseract-core-lstm.wasm.js',
-        ];
-        let lastErr = null;
-        for (const base of cdnBases) {
-          for (const coreFile of coreCandidates) {
-            try {
-              worker = await createWorker('chi_sim+eng', 1, {
-                workerPath: `${base}/tesseract.js@v5.1.1/dist/worker.min.js`,
-                corePath: `${base}/tesseract.js-core@v5.1.1/${coreFile}`,
-              });
-              lastErr = null;
-              break;
-            } catch (e) {
-              lastErr = e;
-            }
-          }
-          if (!lastErr) break;
-        }
-        if (lastErr) throw lastErr;
+        const { getOcrWorker } = await import('../lib/ocr');
+        worker = await getOcrWorker('chi_sim+eng');
         ocrWorkerRef.current = worker;
       }
 
@@ -166,7 +141,8 @@ export function useScanImport({
         } catch (e) {
           if (String(e?.message || '').includes('OCR_TIMEOUT')) {
             if (worker) {
-              try { await worker.terminate(); } catch (err) {}
+              const { terminateOcrWorker } = await import('../lib/ocr');
+              await terminateOcrWorker();
               ocrWorkerRef.current = null;
             }
             throw e;

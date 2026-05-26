@@ -96,9 +96,9 @@ export default function FundCard({
     refreshMs,
   } = useStorageStore();
   const f = useMemo(() => funds?.find((item) => item.code === fundCode), [funds, fundCode]);
-  
+
   const [topHoldings, setTopHoldings] = useState({ holdings: [], holdingsReportDate: null, holdingsIsLastQuarter: false });
-  
+
   useEffect(() => {
     let timer;
     let cancelled = false;
@@ -314,7 +314,7 @@ export default function FundCard({
 
       <div className="row" style={{ marginBottom: 12 }}>
         <Stat
-          label="单位净值"
+          label="最新净值"
           value={
             f.dwjz != null && !isNaN(Number(f.dwjz))
               ? Number(f.dwjz).toFixed(4)
@@ -571,7 +571,7 @@ export default function FundCard({
 
       {(() => {
         const showIntraday =
-          !f.noValuation && Array.isArray(valuationSeries?.[f.code]) && valuationSeries[f.code].length >= 2;
+          !f.noValuation && Array.isArray(valuationSeries?.[f.code]) && valuationSeries[f.code].length >= 1;
         if (!showIntraday) return null;
 
         if (
@@ -597,6 +597,10 @@ export default function FundCard({
             series={valuationSeries[f.code]}
             referenceNav={dwjz != null && Number.isFinite(dwjz) ? dwjz : undefined}
             theme={theme}
+            fundCode={f.code}
+            valuationSource={f.valuationSource}
+            gztime={f.gztime}
+            todayStr={todayStr}
           />
         );
       })()}

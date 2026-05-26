@@ -812,6 +812,8 @@ export default function ModalsLayer({ callbacksRef }) {
             showMarketIndexMobile={cb.current.showMarketIndexMobile}
             showGroupFundSearchPc={cb.current.showGroupFundSearchPc}
             showGroupFundSearchMobile={cb.current.showGroupFundSearchMobile}
+            dynamicStylePc={cb.current.dynamicStylePc}
+            dynamicStyleMobile={cb.current.dynamicStyleMobile}
           />
         )}
       </AnimatePresence>

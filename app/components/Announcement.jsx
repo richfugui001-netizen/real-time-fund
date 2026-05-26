@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { storageStore } from '../stores';
 
-const ANNOUNCEMENT_KEY = 'hasClosedAnnouncement_v1.5.2';
+const ANNOUNCEMENT_KEY = 'hasClosedAnnouncement_v1.6.0';
 
 export default function Announcement() {
   const [isVisible, setIsVisible] = useState(false);
@@ -78,12 +78,9 @@ export default function Announcement() {
               <span>公告</span>
             </div>
             <div className="scrollbar-y-styled" style={{ color: 'var(--text)', lineHeight: '1.6', fontSize: '15px', overflowY: 'auto', minHeight: 0, flex: 1, paddingRight: '4px' }}>
-              <p>v1.5.2 更新内容如下：</p>
-              <p>1. 新增“自添加来”排序。</p>
-              <p>2. 新增持仓占比。</p>
-              <p>3. 移动端表格移除虚拟滚动。</p>
-              <p>4. 增加浏览器兼容性支持。</p>
-              <p>5. 导入基金默认当前分组。</p>
+              <p>v1.6.0 更新内容如下：</p>
+              <p>1. 部分基金支持查看“实时净值估算图”（仅支持数据源1）。</p>
+              <p>2. 优化移动端验证码键盘弹起逻辑。</p>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
               <button

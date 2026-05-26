@@ -22,16 +22,25 @@
 ```javascript
 [
   {
-    code: string,      // 基金代码（唯一标识）
-    name: string,      // 基金名称
-    type: string,      // 基金类型
-    dwjz: number,      // 单位净值
-    gsz: number,       // 估算净值
-    gszzl: number,     // 估算涨跌幅
-    jzrq: string,      // 净值日期
-    gztime: string,    // 估值时间
-    dataSource?: number, // 估值数据源标识（1=天天基金，2=新浪基金预估等，缺省为1）
-    // ... 其他基金字段
+    code: string,                  // 基金代码（唯一标识，如 "000001"）
+    name: string,                  // 基金名称
+    dwjz: string,                  // 最新净值（最新公布的单位净值，存储为字符串，如 "1.2345"）
+    lastNav: string | null,        // 上一个交易日的单位净值，存储为字符串
+    gsz: number | null,            // 估算净值（当前交易日实时估算净值）
+    gszzl: number | null,          // 估算涨跌幅（百分比数值，如 1.23 表示 +1.23%）
+    jzrq: string,                  // 净值日期（格式: "YYYY-MM-DD"）
+    gztime: string | null,         // 估值时间（格式: "YYYY-MM-DD HH:mm"）
+    zzl: number | null,            // 净值涨跌幅（昨日/最新公布日单位净值实际涨跌幅，百分比数值）
+    yesterdayZzl: number | null,   // 昨日（再前一交易日）实际涨跌幅
+    yesterdayNavDelta: number | null, // 昨日（再前一交易日）单位净值变动净额
+    noValuation: boolean,          // 是否无估值数据（true 时界面将不展示估值，仅显示历史净值）
+    valuationSource: string | null, // 估值数据来源标识（如 'fundgz', 'sina_ds2', 'sina_ds3', 'supabase_qdii', 'fallback'）
+    dataSource: number,            // 估值数据源设置（1=天天基金，2=新浪基金口径一，3=新浪基金口径二，默认为1）
+    addedAt: number,               // 基金添加时间戳（毫秒数）
+    addBaseNav: number | null,     // 基金添加时的基准净值（用于计算“自添加来”收益率）
+    addBaseDate: string | null,    // 基金添加时的基准净值日期（格式: "YYYY-MM-DD" 或估值时间）
+    gzstatus?: string | null,      // 可选。从 Supabase 获取的 QDII 估值状态
+    showImageChart?: boolean       // 可选。用户是否选择在实时估值分时处展示净值估算图
   }
 ]
 ```
@@ -836,6 +845,7 @@ const SYNC_KEYS = new Set([
 
 ## 更新日志
 
+- **2026-05-25**: 检查并更新 `funds` 基金数据结构，详尽补充基金对象所有可能的属性字段（如 `lastNav`, `zzl`, `yesterdayZzl`, `yesterdayNavDelta`, `noValuation`, `valuationSource`, `dataSource`, `addedAt`, `addBaseNav`, `addBaseDate` 等），剔除了非实际存在的 legacy `type` 字段，并修正 `dwjz` 的类型说明为字符串类型。
 - **2026-04-13**: 完善 `fundDailyEarnings` 文档（更新为按作用域分桶结构，补充旧版兼容说明）；补充 `customSettings` 中 `showGroupFundSearchPc`、`showGroupFundSearchMobile` 字段；完善导入/导出格式说明（新增 `customSettings`、`fundDailyEarnings`、`collapsedEarnings` 导出支持）；新增导入合并策略详细表格；补充 storageHelper 同步键集合；为每个键标注导入/导出和云端同步状态
 - **2026-04-05（分组独立持仓）**: 新增 `groupHoldings`；`pendingTrades` / `transactions` 支持可选 `groupId`；`dcaPlans` 改为分桶结构（`__global__` + 分组 ID）；同步键与导入导出格式已更新；说明分组持仓从历史全局 `holdings` 的幂等深拷贝迁移规则
 - **2026-04-05**: 全面更新文档，新增 `collapsedEarnings`、`fundDailyEarnings` 键；更新 `customSettings`（新增 `localSortDisplayMode`、`showMarketIndexPc`、`showMarketIndexMobile`）；更新 `dcaPlans`（新增 `weeklyDay`、`monthlyDay`、`lastDate`）；更新 `transactions`（新增 `isDca`、`isHistoryOnly`）；更新 `pendingTrades`（新增 `isDca`）；更新公告版本号至 v20；更新云端同步键列表

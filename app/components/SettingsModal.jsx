@@ -22,7 +22,9 @@ export default function SettingsModal({onClose,
   showMarketIndexPc = true,
   showMarketIndexMobile = true,
   showGroupFundSearchPc = true,
-  showGroupFundSearchMobile = true}) {
+  showGroupFundSearchMobile = true,
+  dynamicStylePc = true,
+  dynamicStyleMobile = true}) {
   const isMobile = useIsMobile();
   const [sliderDragging, setSliderDragging] = useState(false);
   const [resetWidthConfirmOpen, setResetWidthConfirmOpen] = useState(false);
@@ -31,6 +33,8 @@ export default function SettingsModal({onClose,
   const [localShowMarketIndexMobile, setLocalShowMarketIndexMobile] = useState(showMarketIndexMobile);
   const [localShowGroupFundSearchPc, setLocalShowGroupFundSearchPc] = useState(showGroupFundSearchPc);
   const [localShowGroupFundSearchMobile, setLocalShowGroupFundSearchMobile] = useState(showGroupFundSearchMobile);
+  const [localDynamicStylePc, setLocalDynamicStylePc] = useState(dynamicStylePc);
+  const [localDynamicStyleMobile, setLocalDynamicStyleMobile] = useState(dynamicStyleMobile);
   const pageWidthTrackRef = useRef(null);
 
   const clampedWidth = Math.min(window.innerWidth, Math.max(600, Number(containerWidth) || 1200));
@@ -78,6 +82,14 @@ export default function SettingsModal({onClose,
   useEffect(() => {
     setLocalShowGroupFundSearchMobile(showGroupFundSearchMobile);
   }, [showGroupFundSearchMobile]);
+
+  useEffect(() => {
+    setLocalDynamicStylePc(dynamicStylePc);
+  }, [dynamicStylePc]);
+
+  useEffect(() => {
+    setLocalDynamicStyleMobile(dynamicStyleMobile);
+  }, [dynamicStyleMobile]);
 
   return (
     <Dialog
@@ -219,6 +231,21 @@ export default function SettingsModal({onClose,
           </div>
 
           <div className="form-group" style={{ marginBottom: 16 }}>
+            <div className="muted" style={{ marginBottom: 8, fontSize: '0.8rem' }}>减少动态样式效果</div>
+            <div className="row" style={{ justifyContent: 'flex-start', alignItems: 'center' }}>
+              <Switch
+                checked={isMobile ? !localDynamicStyleMobile : !localDynamicStylePc}
+                className="ml-2 scale-125"
+                onCheckedChange={(checked) => {
+                  const nextValue = !checked;
+                  if (isMobile) setLocalDynamicStyleMobile(nextValue);
+                  else setLocalDynamicStylePc(nextValue);
+                }}
+                aria-label="减少动态样式效果"
+              />
+            </div>
+          </div>
+          <div className="form-group" style={{ marginBottom: 16 }}>
             <div className="muted" style={{ marginBottom: 8, fontSize: '0.8rem' }}>数据导出</div>
             <div className="row" style={{ gap: 8 }}>
               <button type="button" className="button" onClick={exportLocalData}>导出配置</button>
@@ -249,7 +276,8 @@ export default function SettingsModal({onClose,
                 localSeconds,
                 isMobile ? localShowMarketIndexMobile : localShowMarketIndexPc,
                 isMobile ? localShowGroupFundSearchMobile : localShowGroupFundSearchPc,
-                isMobile
+                isMobile,
+                isMobile ? localDynamicStyleMobile : localDynamicStylePc
               )}
               disabled={localSeconds < 30}
             >

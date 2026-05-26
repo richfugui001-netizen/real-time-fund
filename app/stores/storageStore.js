@@ -13,6 +13,7 @@ export const getFundCodesSignature = (value, extraFields = []) => {
       'jzrq',
       'dwjz',
       'dataSource',
+      'showImageChart',
       ...(Array.isArray(extraFields) ? extraFields : [])
     ]));
     const items = list.map((item) => {

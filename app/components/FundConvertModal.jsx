@@ -57,7 +57,7 @@ export default function FundConvertModal({
 
   const maxOut = useMemo(() => {
     const n = Number(maxOutAmount);
-    return Number.isFinite(n) && n > 0 ? n : 0;
+    return Number.isFinite(n) && n > 0 ? Number(n.toFixed(2)) : 0;
   }, [maxOutAmount]);
 
   const outAmt = useMemo(() => Number.parseFloat(outAmount), [outAmount]);
@@ -207,6 +207,25 @@ export default function FundConvertModal({
                 placeholder="请输入转出金额"
               />
             </div>
+            {maxOut > 0 && (
+              <div className="row" style={{ gap: 8, marginTop: 8 }}>
+                {[
+                  { label: '1/4', value: 0.25 },
+                  { label: '1/3', value: 1 / 3 },
+                  { label: '1/2', value: 0.5 },
+                  { label: '全部', value: 1 },
+                ].map((opt) => (
+                  <button
+                    key={opt.label}
+                    type="button"
+                    className="trade-amount-btn"
+                    onClick={() => setOutAmount(format2(maxOut * opt.value))}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>
               * {hintMax}
             </div>

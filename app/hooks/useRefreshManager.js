@@ -379,6 +379,7 @@ export function useRefreshManager({ scheduleDcaTrades, processPendingQueue, devi
             if (f.addBaseNav != null) merged.addBaseNav = f.addBaseNav;
             if (f.addBaseDate != null) merged.addBaseDate = f.addBaseDate;
             if (f.dataSource != null) merged.dataSource = f.dataSource;
+            if (f.showImageChart !== undefined) merged.showImageChart = f.showImageChart;
             if (merged.addedAt == null || merged.addBaseNav == null || merged.addBaseDate == null) {
               const snap = getAddBaseSnapshotFromFund(merged);
               if (merged.addedAt == null) merged.addedAt = Date.now();

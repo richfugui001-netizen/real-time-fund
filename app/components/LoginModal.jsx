@@ -21,6 +21,8 @@ export default function LoginModal({onClose,
 
   const loginModalCardRef = useRef(null);
   const otpTouchWrapRef = useRef(null);
+  // iOS 代理 input：在用户手势中同步 focus，保持键盘弹起状态
+  const proxyInputRef = useRef(null);
 
   const handleSendOtp = async (e) => {
     e.preventDefault();
@@ -42,6 +44,10 @@ export default function LoginModal({onClose,
     }
 
     setLoginLoading(true);
+    // 在用户手势同步上下文内 focus 代理 input，iOS 会弹起键盘
+    if (isMobile && proxyInputRef.current) {
+      proxyInputRef.current.focus();
+    }
     try {
       const { error } = await supabase.auth.signInWithOtp({
         email: loginEmail.trim(),
@@ -58,6 +64,10 @@ export default function LoginModal({onClose,
         setLoginError('网络错误，请检查网络连接');
       } else {
         setLoginError(err.message || '发送验证码失败，请稍后再试');
+      }
+      // 发送失败，收起键盘
+      if (isMobile && proxyInputRef.current) {
+        proxyInputRef.current.blur();
       }
     } finally {
       setLoginLoading(false);
@@ -132,20 +142,40 @@ export default function LoginModal({onClose,
     }
   }, []);
 
-  // 发送成功后尝试自动聚焦；若系统仍不弹键盘，用户轻点验证码区会由 onPointerDownCapture 再 focus
+  // 发送成功后将焦点从代理 input 转移到真正的 OTP input，键盘会保持弹出状态
   useLayoutEffect(() => {
     if (!loginSuccess || !isMobile) return;
     const run = () => focusOtpInput();
+    // 立即执行一次 + rAF + setTimeout 多重尝试，确保 OTP input 已渲染
     run();
     const t = requestAnimationFrame(run);
     const t2 = window.setTimeout(run, 50);
+    const t3 = window.setTimeout(run, 150);
     return () => {
       cancelAnimationFrame(t);
       window.clearTimeout(t2);
+      window.clearTimeout(t3);
     };
   }, [loginSuccess, isMobile, focusOtpInput]);
 
   return (
+    <>
+    {/* iOS 代理 input：保持在用户手势链中，防止键盘收起 */}
+    <input
+      ref={proxyInputRef}
+      aria-hidden="true"
+      tabIndex={-1}
+      inputMode="numeric"
+      style={{
+        position: 'fixed',
+        opacity: 0,
+        width: 0,
+        height: 0,
+        top: '-9999px',
+        left: '-9999px',
+        pointerEvents: 'none',
+      }}
+    />
     <div
       className="modal-overlay"
       role="dialog"
@@ -291,5 +321,6 @@ export default function LoginModal({onClose,
         )}
       </div>
     </div>
+    </>
   );
 }

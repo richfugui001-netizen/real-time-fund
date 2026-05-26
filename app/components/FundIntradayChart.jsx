@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, forwardRef } from 'react';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -10,8 +10,15 @@ import {
   Tooltip,
   Filler
 } from 'chart.js';
+import { PhotoProvider, PhotoView } from 'react-photo-view';
+import 'react-photo-view/dist/react-photo-view.css';
 import { Line } from 'react-chartjs-2';
 import { isNumber } from 'lodash';
+import { SwitchIcon } from './Icons';
+import { useQuery } from '@tanstack/react-query';
+import { ocrFundChart } from '@/app/lib/query-keys';
+import { useStorageStore } from '../stores';
+import { useIsMobile } from "../hooks/useIsMobile";
 
 ChartJS.register(
   CategoryScale,
@@ -53,10 +60,56 @@ function getChartThemeColors(theme) {
  * referenceNav: 参考净值（最新单位净值），用于计算涨跌幅；未传则用当日第一个估值作为参考。
  * theme: 'light' | 'dark'，用于亮色主题下坐标轴与 crosshair 样式
  */
-export default function FundIntradayChart({ series = [], referenceNav, theme = 'dark' }) {
+// 空的 forwardRef 包装器，用于故意丢弃 ref，使得 react-photo-view 找不到原图位置，从而触发默认的“中心放大”动画效果
+const CenterOrigin = forwardRef(({ children, ...props }, ref) => {
+  return <div {...props} style={{ width: '100%', height: '100%' }}>{children}</div>;
+});
+CenterOrigin.displayName = 'CenterOrigin';
+
+export default function FundIntradayChart({ series = [], referenceNav, theme = 'dark', fundCode, valuationSource, gztime, todayStr }) {
+  const isMobile = useIsMobile();
   const chartRef = useRef(null);
   const hoverTimeoutRef = useRef(null);
   const chartColors = useMemo(() => getChartThemeColors(theme), [theme]);
+  const funds = useStorageStore((s) => s.funds);
+  const setFunds = useStorageStore((s) => s.setFunds);
+
+  const currentFund = useMemo(() => funds?.find((f) => f.code === fundCode), [funds, fundCode]);
+  const showImageChartPreference = !!currentFund?.showImageChart;
+
+  const isFundgzToday = valuationSource === 'fundgz' && gztime && todayStr && gztime.includes(todayStr);
+
+  const { data: ocrVerified = false } = useQuery({
+    queryKey: ocrFundChart(fundCode, todayStr),
+    queryFn: async () => {
+      if (!isFundgzToday) return false;
+      try {
+        const { getOcrWorker } = await import('@/app/lib/ocr');
+        const worker = await getOcrWorker('chi_sim+eng');
+        const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(`j4.dfcfw.com/charts/pic6/${fundCode}.png?v=${Date.now()}`)}`;
+        const res = await worker.recognize(proxyUrl);
+
+        const text = res?.data?.text || '';
+        const parts = todayStr.split('-');
+        if (parts.length === 3) {
+          const shortDate1 = `${parts[1]}-${parts[2]}`;
+          const shortDate2 = `${parseInt(parts[1], 10)}-${parseInt(parts[2], 10)}`;
+          if (text.includes(todayStr) || text.includes(shortDate1) || text.includes(shortDate2)) {
+            return true;
+          }
+        }
+        return false;
+      } catch (e) {
+        console.error('OCR check error:', e);
+        return false;
+      }
+    },
+    enabled: !!isFundgzToday,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
+
+  const actuallyShowImageChart = showImageChartPreference && isFundgzToday && ocrVerified;
 
   const chartData = useMemo(() => {
     if (!series.length) return { labels: [], datasets: [] };
@@ -157,15 +210,19 @@ export default function FundIntradayChart({ series = [], referenceNav, theme = '
 
       if (hasActive) {
         hoverTimeoutRef.current = setTimeout(() => {
-          const c = chartRef.current || currentChart;
-          if (!c) return;
-          c.setActiveElements([]);
-          if (c.tooltip) {
-            c.tooltip.setActiveElements([], { x: 0, y: 0 });
-          }
-          c.update();
-          if (target) {
-            target.style.cursor = 'default';
+          const c = chartRef.current;
+          if (!c || !c.canvas) return;
+          try {
+            c.setActiveElements([]);
+            if (c.tooltip) {
+              c.tooltip.setActiveElements([], { x: 0, y: 0 });
+            }
+            c.update();
+            if (target && target.style) {
+              target.style.cursor = 'default';
+            }
+          } catch (e) {
+            console.warn('Failed to update chart after hover timeout', e);
           }
         }, 2000);
       }
@@ -248,7 +305,7 @@ export default function FundIntradayChart({ series = [], referenceNav, theme = '
   }];
   }, [theme]);
 
-  if (series.length < 2) return null;
+  if (series.length < 1) return null;
 
   const displayDate = series[0]?.date || series[series.length - 1]?.date;
 
@@ -257,11 +314,103 @@ export default function FundIntradayChart({ series = [], referenceNav, theme = '
       <div className="muted" style={{ fontSize: 11, marginBottom: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           实时估值分时
+          {(isFundgzToday && ocrVerified) && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setFunds((prev) =>
+                  prev.map((f) =>
+                    f.code === fundCode ? { ...f, showImageChart: !showImageChartPreference } : f
+                  )
+                );
+              }}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: chartColors.primary,
+                padding: '2px 6px',
+                fontSize: 10,
+                cursor: 'pointer',
+                marginLeft: 4,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4
+              }}
+            >
+              <SwitchIcon width="12" height="12" /> {showImageChartPreference ? '本地估值分时图' : '净值估算图'}
+            </button>
+          )}
         </span>
         {displayDate && <span style={{ fontSize: 11 }}>估值日期 {displayDate}</span>}
       </div>
-      <div style={{ position: 'relative', height: 100, width: '100%', touchAction: 'pan-y' }}>
-        <Line ref={chartRef} data={chartData} options={options} plugins={plugins} />
+      <div style={{ position: 'relative', height: actuallyShowImageChart ? isMobile ? 200 : 300 : 100, width: '100%', touchAction: 'pan-y', transition: 'height 0.2s ease-in-out' }}>
+        {actuallyShowImageChart ? (
+          <PhotoProvider
+            onVisibleChange={(visible) => {
+              if (visible) {
+                document.body.setAttribute('data-photo-viewer-open', 'true');
+              } else {
+                setTimeout(() => {
+                  document.body.removeAttribute('data-photo-viewer-open');
+                }, 300);
+              }
+            }}
+            overlayRender={() => (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 'env(safe-area-inset-bottom, 24px)',
+                  left: 0,
+                  width: '100%',
+                  textAlign: 'center',
+                  color: 'rgba(255, 255, 255, 0.7)',
+                  fontSize: 14,
+                  pointerEvents: 'none',
+                  zIndex: 2000,
+                  paddingBottom: 24
+                }}
+              >
+                点击非图片区域退出图片查看器
+              </div>
+            )}
+          >
+            <PhotoView
+              src={isMobile ? `https://j4.dfcfw.com/charts/pic6/${fundCode}.png${gztime ? '?v=' + encodeURIComponent(gztime) : ''}` : undefined}
+              width={isMobile ? undefined : 817}
+              height={isMobile ? undefined : 450}
+              render={!isMobile ? ({ attrs }) => {
+                return (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    {...attrs}
+                    src={`https://j4.dfcfw.com/charts/pic6/${fundCode}.png${gztime ? '?v=' + encodeURIComponent(gztime) : ''}`}
+                    alt="净值估算图"
+                    style={{
+                      ...attrs.style,
+                      width: '817px',
+                      height: '450px',
+                      objectFit: 'contain'
+                    }}
+                  />
+                );
+              } : undefined}
+            >
+              <CenterOrigin>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`https://j4.dfcfw.com/charts/pic6/${fundCode}.png${gztime ? '?v=' + encodeURIComponent(gztime) : ''}`}
+                  alt="净值估算图"
+                  style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: 'pointer' }}
+                  onError={(e) => {
+                    e.target.style.display = 'none';
+                  }}
+                />
+              </CenterOrigin>
+            </PhotoView>
+          </PhotoProvider>
+        ) : (
+          <Line ref={chartRef} data={chartData} options={options} plugins={plugins} />
+        )}
       </div>
     </div>
   );

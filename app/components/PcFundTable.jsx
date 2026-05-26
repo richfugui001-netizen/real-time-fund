@@ -2592,12 +2592,24 @@ function FundDetailDialog({ blockDialogClose, cardDialogRow, getFundCardProps, s
     <Dialog
       open
       onOpenChange={(open) => {
+        if (!open && document.body.hasAttribute('data-photo-viewer-open')) return;
         if (!open && !blockDialogClose) setCardDialogRow(null);
       }}
     >
       <DialogContent
         className="sm:max-w-2xl max-h-[88vh] flex flex-col p-0 overflow-hidden"
-        onPointerDownOutside={blockDialogClose ? (e) => e.preventDefault() : undefined}
+        onPointerDownOutside={(e) => {
+          if (document.body.hasAttribute('data-photo-viewer-open')) {
+            e.preventDefault();
+            return;
+          }
+          if (blockDialogClose) e.preventDefault();
+        }}
+        onEscapeKeyDown={(e) => {
+          if (document.body.hasAttribute('data-photo-viewer-open')) {
+            e.preventDefault();
+          }
+        }}
       >
         <DialogHeader className="flex-shrink-0 flex flex-row items-center justify-between gap-2 space-y-0 px-6 pb-4 pt-6 text-left border-b border-[var(--border)]">
           <DialogTitle className="text-base font-semibold text-[var(--text)]">

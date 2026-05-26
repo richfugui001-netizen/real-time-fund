@@ -2707,6 +2707,28 @@ html::-webkit-scrollbar-thumb:active,
   }
 }
 
+/* 减少动态样式效果平替方案 */
+.reduce-dynamic-style * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: none !important;
+  transition: none !important;
+}
+
+.reduce-dynamic-style .glass,
+.reduce-dynamic-style .group-summary-sticky,
+.reduce-dynamic-style .filter-bar,
+.reduce-dynamic-style .mobile-bottom-nav,
+.reduce-dynamic-style .drawer-content-theme,
+.reduce-dynamic-style [data-slot="dialog-content"],
+.reduce-dynamic-style .card {
+  background-color: color-mix(in srgb, var(--card) 96%, transparent) !important;
+}
+
+.reduce-dynamic-style body::before {
+  display: none !important;
+}
+
 .mine-tab {
   display: flex;
   flex-direction: column;
@@ -4390,4 +4412,9 @@ html::-webkit-scrollbar-thumb:active,
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* react-photo-view portal pointer events fix for Radix UI */
+.PhotoView-Portal {
+  pointer-events: auto !important;
 }
