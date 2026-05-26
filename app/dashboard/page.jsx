@@ -22,7 +22,9 @@ import {
 } from 'lucide-react';
 
 import { fetchFundData, fetchMarketIndices } from '@/app/api/fund';
-import { getFundMetricBasis, getPortfolioHoldingMetrics } from '@/app/lib/portfolioMetrics';
+import PositionLabel from '@/app/components/PositionLabel';
+import { getFundMetricBasis, getPortfolioHoldingMetrics, getPortfolioPositions } from '@/app/lib/portfolioMetrics';
+import { getPortfolioDataQuality, PORTFOLIO_METRIC_NOTES } from '@/app/lib/portfolioQuality';
 import { getAllValuationSeries, recordValuation } from '@/app/lib/valuationTimeseries';
 import { storageStore, useStorageStore } from '@/app/stores';
 import styles from './dashboard.module.css';
@@ -45,11 +47,6 @@ const formatPct = (value, digits = 2) => {
 };
 
 const signedClassName = (value) => (Number(value) >= 0 ? styles.up : styles.down);
-
-const toFiniteNumber = (value) => {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-};
 
 const buildSparklinePath = (points, width = 180, height = 54) => {
   if (!isArray(points) || points.length < 2) return '';
@@ -255,48 +252,26 @@ export default function DashboardPage() {
   }, [refreshDashboard, refreshMs]);
 
   const portfolioPositions = useMemo(() => {
-    const rows = [];
-    const groupNameById = new Map(
-      (isArray(groups) ? groups : [])
-        .filter((group) => group?.id)
-        .map((group) => [group.id, group.name || '未命名分组'])
-    );
-    const validGroupIds = new Set(groupNameById.keys());
-
-    (isArray(funds) ? funds : []).forEach((fund) => {
-      const code = fund?.code;
-      if (!code) return;
-      const globalHolding = holdings?.[code];
-      const globalShare = toFiniteNumber(globalHolding?.share);
-      if (globalShare != null && globalShare > 0) {
-        rows.push({ fund, holding: globalHolding, scopeGroupIds: null, scopeName: '全部', positionKey: `${code}:all` });
-      }
-
-      Object.entries(groupHoldings || {}).forEach(([groupId, bucket]) => {
-        if (!validGroupIds.has(groupId)) return;
-        const holding = bucket?.[code];
-        const share = toFiniteNumber(holding?.share);
-        if (share == null || share <= 0) return;
-        rows.push({ fund, holding, scopeGroupIds: groupId, scopeName: groupNameById.get(groupId) || '未命名分组', positionKey: `${code}:${groupId}` });
-      });
-    });
-
-    return rows;
+    return getPortfolioPositions({ funds, holdings, groupHoldings, groups });
   }, [funds, groupHoldings, groups, holdings]);
 
   const fundRows = useMemo(() => {
-    return portfolioPositions.map(({ fund, holding, scopeGroupIds, scopeName, positionKey }) => {
+    return portfolioPositions.map(({ fund, holding, scopeGroupIds, scopeName, scopeTitle, positionKey }) => {
       const metrics = getPortfolioHoldingMetrics(fund, holding, {
         transactions,
         scopeGroupIds,
       });
       const basis = getFundMetricBasis(fund);
+      const fundName = fund.name || fund.code;
       return {
         ...fund,
         ...metrics,
         positionKey,
         scopeName,
-        positionName: `${fund.name || fund.code} · ${scopeName}`,
+        scopeTitle,
+        positionName: scopeName ? `${fundName} · ${scopeName}` : fundName,
+        share: Number(holding?.share) || 0,
+        cost: Number(holding?.cost) || null,
         rate: basis.changeRate,
         currentNav: basis.nav,
         metricSource: basis.source,
@@ -327,6 +302,17 @@ export default function DashboardPage() {
     () => [...fundRows].sort((a, b) => Math.abs(b.todayProfit) - Math.abs(a.todayProfit)).slice(0, 4),
     [fundRows]
   );
+
+  const restFundsSummary = useMemo(() => {
+    const sorted = [...fundRows].sort((a, b) => Math.abs(b.todayProfit) - Math.abs(a.todayProfit));
+    const rest = sorted.slice(4);
+    if (!rest.length) return null;
+    return {
+      count: rest.length,
+      todayProfit: rest.reduce((sum, fund) => sum + (Number(fund.todayProfit) || 0), 0),
+      amount: rest.reduce((sum, fund) => sum + (Number(fund.amount) || 0), 0),
+    };
+  }, [fundRows]);
 
   const contributionRows = useMemo(
     () => [...fundRows]
@@ -395,9 +381,27 @@ export default function DashboardPage() {
     return picked.length ? picked : marketIndices.slice(0, 4);
   }, [marketIndices]);
 
+  const portfolioDataQuality = useMemo(() => getPortfolioDataQuality(fundRows), [fundRows]);
+
   if (!fundCodes.length) return <EmptyDashboard />;
 
   const RankIcon = rankPanel.icon;
+  const fundMatrixClass = topFunds.length <= 1
+    ? styles.fundMatrix1
+    : topFunds.length === 2
+      ? styles.fundMatrix2
+      : topFunds.length === 3
+        ? styles.fundMatrix3
+        : styles.fundMatrix4;
+  const fundMatrixStyle = topFunds.length === 1
+    ? { gridTemplateColumns: 'minmax(0, 1fr)', gridAutoRows: 'minmax(154px, 176px)' }
+    : topFunds.length === 2
+      ? { gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gridAutoRows: 'minmax(154px, 176px)' }
+      : topFunds.length === 3
+        ? { gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gridAutoRows: 'minmax(148px, 170px)' }
+        : restFundsSummary
+          ? { gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gridTemplateRows: 'repeat(2, minmax(108px, 1fr)) auto' }
+          : { gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gridTemplateRows: 'repeat(2, minmax(128px, 1fr))' };
 
   return (
     <main className={styles.screen}>
@@ -407,6 +411,12 @@ export default function DashboardPage() {
           <div>
             <p className={styles.kicker}>实时估值 / 持仓收益 / 主要市场</p>
             <h1>基金持仓大屏</h1>
+            <div className={styles.scopeNote}>
+              <span>确权净值</span>
+              <span>今日估值</span>
+              <span>成本覆盖 {formatPct(portfolioDataQuality.costCoverage)}</span>
+              <span>{lastUpdated ? `更新 ${lastUpdated}` : PORTFOLIO_METRIC_NOTES.refresh}</span>
+            </div>
           </div>
         </div>
         <div className={styles.headerMeta}>
@@ -471,7 +481,7 @@ export default function DashboardPage() {
               {rankPanel.items.map((fund, index) => (
                 <div className={styles.rankItem} key={`${rankPanel.title}-${fund.positionKey}`}>
                   <i>{index + 1}</i>
-                  <span title={fund.positionName}>{fund.positionName}</span>
+                  <PositionLabel row={fund} compact muted />
                   <b className={signedClassName(fund.rate)}>{formatPct(fund.rate)}</b>
                 </div>
               ))}
@@ -514,16 +524,13 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className={styles.fundMatrix}>
+          <div className={cn(styles.fundMatrix, fundMatrixClass)} style={fundMatrixStyle}>
             {topFunds.map((fund) => {
               const positive = Number(fund.rate) >= 0;
               return (
                 <article className={styles.fundCard} key={fund.positionKey}>
                   <div className={styles.fundTop}>
-                    <div>
-                      <strong title={fund.name}>{fund.name}</strong>
-                      <span>{fund.code} · {fund.scopeName}</span>
-                    </div>
+                    <PositionLabel row={fund} compact />
                     <b className={signedClassName(fund.rate)}>{formatPct(fund.rate)}</b>
                   </div>
                   <MiniSparkline series={fund.series} positive={positive} />
@@ -536,6 +543,13 @@ export default function DashboardPage() {
                 </article>
               );
             })}
+            {restFundsSummary && (
+              <div className={styles.restSummary}>
+                <span>其余 {restFundsSummary.count} 只合计影响</span>
+                <strong className={signedClassName(restFundsSummary.todayProfit)}>¥ {formatNumber(restFundsSummary.todayProfit)}</strong>
+                <em>资产 ¥ {formatNumber(restFundsSummary.amount)}</em>
+              </div>
+            )}
           </div>
         </section>
 
@@ -548,7 +562,7 @@ export default function DashboardPage() {
               {allocationRows.length ? allocationRows.map((fund) => (
                 <div className={styles.allocationItem} key={fund.positionKey}>
                   <div>
-                    <span title={fund.positionName}>{fund.positionName}</span>
+                    <PositionLabel row={fund} compact muted />
                     <b>{formatNumber(fund.weight)}%</b>
                   </div>
                   <div className={styles.allocationBar}><i style={{ width: `${fund.weight}%` }} /></div>
@@ -565,7 +579,7 @@ export default function DashboardPage() {
               {contributionRows.length ? contributionRows.map((fund, index) => (
                 <div className={styles.eventItem} key={fund.positionKey}>
                   <i>{index + 1}</i>
-                  <span title={fund.positionName}>{fund.positionName}</span>
+                  <PositionLabel row={fund} compact muted />
                   <b className={signedClassName(fund.todayProfit)}>¥ {formatNumber(fund.todayProfit)}</b>
                 </div>
               )) : <p className={styles.emptyHint}>暂无持仓金额，设置持仓后展示今日影响。</p>}

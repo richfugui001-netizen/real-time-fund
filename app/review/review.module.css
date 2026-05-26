@@ -1,4 +1,10 @@
 .page {
+  --color-up: #ff6868;
+  --color-down: #23d39b;
+  --color-accent: #7ce8d6;
+  --panel-border: rgba(255, 255, 255, .13);
+  --panel-bg: linear-gradient(180deg, rgba(255, 255, 255, .105), rgba(255, 255, 255, .045));
+  --text-muted: rgba(239, 252, 248, .62);
   min-height: 100vh;
   color: #effcf8;
   background:
@@ -18,7 +24,7 @@
 
 .kicker {
   margin: 0 0 6px;
-  color: #7ce8d6;
+  color: var(--color-accent);
   font-size: 13px;
   font-weight: 700;
 }
@@ -82,9 +88,9 @@
 .aiPanel,
 .statCard,
 .panel {
-  border: 1px solid rgba(255, 255, 255, .13);
+  border: 1px solid var(--panel-border);
   border-radius: 8px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, .105), rgba(255, 255, 255, .045));
+  background: var(--panel-bg);
   box-shadow: 0 22px 60px rgba(0, 0, 0, .28);
   backdrop-filter: blur(18px);
 }
@@ -93,14 +99,14 @@
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 18px;
+  padding: 16px;
   min-width: 0;
 }
 
 .scoreRing {
   --score: 0%;
-  width: 122px;
-  height: 122px;
+  width: 112px;
+  height: 112px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -112,13 +118,13 @@
 }
 
 .scoreRing strong {
-  font-size: 33px;
+  font-size: 31px;
   line-height: 1;
   font-weight: 900;
 }
 
 .scoreRing span {
-  margin-top: 33px;
+  margin-top: 31px;
   position: absolute;
   color: rgba(239, 252, 248, .58);
   font-size: 12px;
@@ -126,8 +132,8 @@
 }
 
 .scoreCard p,
-.heroMetrics span,
-.reviewStrip span {
+.heroMetrics article > span,
+.reviewStrip article > span {
   margin: 0;
   color: rgba(239, 252, 248, .62);
   font-size: 13px;
@@ -135,8 +141,8 @@
 }
 
 .scoreCard h2 {
-  margin: 7px 0 8px;
-  font-size: 28px;
+  margin: 6px 0 7px;
+  font-size: 26px;
   line-height: 1.1;
   font-weight: 900;
 }
@@ -148,8 +154,8 @@
 .scoreCard div:last-child span {
   display: block;
   color: rgba(239, 252, 248, .7);
-  line-height: 1.55;
-  font-size: 14px;
+  line-height: 1.5;
+  font-size: 13px;
 }
 
 .heroMetrics {
@@ -160,22 +166,22 @@
 
 .heroMetrics article {
   min-width: 0;
-  padding: 15px;
+  padding: 14px;
 }
 
 .heroMetrics svg {
   color: #7ce8d6;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .heroMetrics strong {
   display: block;
   min-width: 0;
   overflow: hidden;
-  margin-top: 7px;
+  margin-top: 6px;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 19px;
+  font-size: 18px;
   font-weight: 900;
 }
 
@@ -188,10 +194,10 @@
 }
 
 .statCard {
-  min-height: 116px;
+  min-height: 104px;
   display: flex;
   gap: 14px;
-  padding: 16px;
+  padding: 14px;
 }
 
 .statIcon {
@@ -212,15 +218,15 @@
 
 .statCard strong {
   display: block;
-  margin-top: 7px;
-  font-size: 25px;
+  margin-top: 6px;
+  font-size: 23px;
   line-height: 1.1;
   font-weight: 850;
 }
 
 .statCard span {
   display: block;
-  margin-top: 8px;
+  margin-top: 7px;
   color: rgba(239, 252, 248, .62);
   font-size: 13px;
 }
@@ -263,7 +269,7 @@
 }
 
 .marketPanel {
-  padding: 16px;
+  padding: 15px;
   margin-bottom: 12px;
 }
 
@@ -307,7 +313,7 @@
   min-width: 0;
   border-radius: 8px;
   background: rgba(5, 16, 20, .28);
-  padding: 12px;
+  padding: 11px;
 }
 
 .marketGrid article > strong {
@@ -336,12 +342,21 @@
   padding: 6px 9px;
   font-size: 12px;
   font-weight: 750;
+  min-width: 0;
 }
 
 .marketRankMini span {
   width: 100%;
   justify-content: space-between;
   border-radius: 8px;
+}
+
+.marketChips span {
+  white-space: nowrap;
+}
+
+.marketRankMini span {
+  white-space: normal;
 }
 
 .marketChips b,
@@ -405,7 +420,6 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
   flex-wrap: wrap;
 }
 
@@ -433,6 +447,13 @@
   gap: 10px;
 }
 
+.aiSummaryRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .aiKeyRow {
   grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 10px;
@@ -441,6 +462,7 @@
 .aiAskRow {
   grid-template-columns: minmax(0, 1fr) 210px;
   align-items: stretch;
+  margin-top: 12px;
 }
 
 .aiKeyRow input,
@@ -477,8 +499,16 @@
   gap: 10px;
 }
 
+.aiButtonsInline {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .aiKeyRow button,
-.aiButtons button {
+.aiButtons button,
+.aiButtonsInline button {
   border: 1px solid rgba(255, 255, 255, .14);
   border-radius: 8px;
   background: rgba(255, 255, 255, .08);
@@ -496,7 +526,8 @@
   padding: 0 13px;
 }
 
-.aiButtons button {
+.aiButtons button,
+.aiButtonsInline button {
   min-height: 41px;
   display: flex;
   align-items: center;
@@ -505,12 +536,14 @@
   padding: 0 12px;
 }
 
-.aiButtons button:first-child {
+.aiButtons button:first-child,
+.aiButtonsInline button:first-child {
   background: linear-gradient(135deg, rgba(35, 211, 155, .32), rgba(255, 104, 104, .2));
 }
 
 .aiKeyRow button:disabled,
-.aiButtons button:disabled {
+.aiButtons button:disabled,
+.aiButtonsInline button:disabled {
   cursor: not-allowed;
   opacity: .58;
 }
@@ -724,7 +757,7 @@
 }
 
 .panel {
-  padding: 16px;
+  padding: 15px;
   min-width: 0;
 }
 
@@ -839,9 +872,7 @@
   font-weight: 850;
 }
 
-.impactItem span,
-.allocationItem span,
-.dragItem span {
+.metricLine {
   display: block;
   margin-top: 5px;
   color: rgba(239, 252, 248, .62);
@@ -882,11 +913,11 @@
 }
 
 .up {
-  color: #ff6868;
+  color: var(--color-up);
 }
 
 .down {
-  color: #23d39b;
+  color: var(--color-down);
 }
 
 @media (max-width: 1120px) {
@@ -931,6 +962,15 @@
   .aiAskRow,
   .aiKeyRow {
     grid-template-columns: 1fr;
+  }
+
+  .aiSummaryRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .aiButtonsInline {
+    justify-content: flex-start;
   }
 
   .scoreCard {

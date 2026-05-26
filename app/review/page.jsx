@@ -31,9 +31,11 @@ import {
   fetchMarketIndices,
   fetchRelatedSectorsBatch,
 } from '@/app/api/fund';
+import PositionLabel from '@/app/components/PositionLabel';
 import { DAILY_EARNINGS_SCOPE_ALL } from '@/app/lib/dailyEarnings';
 import { DCA_SCOPE_GLOBAL } from '@/app/lib/fundHelpers';
-import { getPortfolioHoldingMetrics } from '@/app/lib/portfolioMetrics';
+import { getPortfolioHoldingMetrics, getPortfolioPositions } from '@/app/lib/portfolioMetrics';
+import { getPortfolioDataQuality } from '@/app/lib/portfolioQuality';
 import { useStorageStore } from '@/app/stores';
 import styles from './review.module.css';
 
@@ -141,14 +143,10 @@ function Panel({ title, icon: Icon, children, aside }) {
   );
 }
 
-const buildAiReviewPrompt = ({ totals, monthEarnings, rows, allocationRows, impactRows, healthChecks, reviewSummary, marketContext, question }) => {
+const buildAiReviewPrompt = ({ totals, monthEarnings, rows, allocationRows, impactRows, healthChecks, reviewSummary, marketContext, dataQuality, question }) => {
   const payload = {
     date: dayjs().format('YYYY-MM-DD HH:mm:ss'),
-    dataNote: {
-      totalAsset: '全部资产使用确权净值口径',
-      todayProfit: '今日预估收益使用估值口径',
-      holdingProfit: '持有收益使用确权净值减持仓成本',
-    },
+    dataNote: dataQuality.notes,
     portfolio: {
       amount: Number(totals.amount.toFixed(2)),
       todayProfit: Number(totals.todayProfit.toFixed(2)),
@@ -159,6 +157,7 @@ const buildAiReviewPrompt = ({ totals, monthEarnings, rows, allocationRows, impa
       healthLevel: reviewSummary.level,
       estimateCoverage: Number(reviewSummary.estimateCoverage.toFixed(2)),
       costCoverage: Number(reviewSummary.costCoverage.toFixed(2)),
+      pendingTradeCount: dataQuality.pendingTradeCount,
       topThreeWeight: Number(reviewSummary.topThreeWeight.toFixed(2)),
     },
     funds: rows.map((row) => ({
@@ -177,6 +176,12 @@ const buildAiReviewPrompt = ({ totals, monthEarnings, rows, allocationRows, impa
     allocationTop: allocationRows.map((row) => ({ name: row.positionName || row.name, weight: Number(row.weight.toFixed(2)), amount: Number(row.amount.toFixed(2)) })),
     impactTop: impactRows.map((row) => ({ name: row.positionName || row.name, todayProfit: Number(row.todayProfit.toFixed(2)), todayRate: row.rate == null ? null : Number(row.rate.toFixed(2)) })),
     healthChecks: healthChecks.map((check) => ({ type: check.type, title: check.title, text: check.text })),
+    dataQuality: {
+      estimateCoverage: Number(dataQuality.estimateCoverage.toFixed(2)),
+      costCoverage: Number(dataQuality.costCoverage.toFixed(2)),
+      pendingTradeCount: dataQuality.pendingTradeCount,
+      warnings: dataQuality.warnings,
+    },
     marketContext,
     question: question || '请生成今天的基金持仓复盘。',
   };
@@ -284,6 +289,7 @@ export default function ReviewPage() {
   const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
   const [aiQuestion, setAiQuestion] = useState('');
   const [aiReview, setAiReview] = useState(EMPTY_AI_REVIEW);
+  const [aiExpanded, setAiExpanded] = useState(false);
   const [aiError, setAiError] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
   const [marketIndices, setMarketIndices] = useState([]);
@@ -324,48 +330,26 @@ export default function ReviewPage() {
   }, []);
 
   const portfolioPositions = useMemo(() => {
-    const positions = [];
-    const groupNameById = new Map(
-      (Array.isArray(groups) ? groups : [])
-        .filter((group) => group?.id)
-        .map((group) => [group.id, group.name || '未命名分组'])
-    );
-    const validGroupIds = new Set(groupNameById.keys());
-
-    (Array.isArray(funds) ? funds : []).forEach((fund) => {
-      const code = fund?.code;
-      if (!code) return;
-      const globalShare = toFiniteNumber(holdings?.[code]?.share);
-      if (globalShare != null && globalShare > 0) {
-        positions.push({ fund, holding: holdings[code], scopeGroupIds: null, scopeName: '全部', positionKey: `${code}:all` });
-      }
-
-      Object.entries(groupHoldings || {}).forEach(([groupId, bucket]) => {
-        if (!validGroupIds.has(groupId)) return;
-        const holding = bucket?.[code];
-        const share = toFiniteNumber(holding?.share);
-        if (share == null || share <= 0) return;
-        positions.push({ fund, holding, scopeGroupIds: groupId, scopeName: groupNameById.get(groupId) || '未命名分组', positionKey: `${code}:${groupId}` });
-      });
-    });
-
-    return positions;
+    return getPortfolioPositions({ funds, holdings, groupHoldings, groups });
   }, [funds, groupHoldings, groups, holdings]);
 
   const rows = useMemo(() => {
-    return portfolioPositions.map(({ fund, holding, scopeGroupIds, scopeName, positionKey }) => {
+    return portfolioPositions.map(({ fund, holding, scopeGroupIds, scopeName, scopeTitle, positionKey }) => {
       const metrics = getPortfolioHoldingMetrics(fund, holding, {
         transactions,
         scopeGroupIds,
       });
+      const fundName = fund.name || fund.code;
       return {
         ...fund,
         ...metrics,
         positionKey,
         scopeName,
-        positionName: `${fund.name || fund.code} · ${scopeName}`,
+        scopeTitle,
+        positionName: scopeName ? `${fundName} · ${scopeName}` : fundName,
         rate: metrics.changeRate,
         share: toFiniteNumber(holding?.share) ?? 0,
+        cost: toFiniteNumber(holding?.cost),
       };
     });
   }, [portfolioPositions, transactions]);
@@ -401,6 +385,10 @@ export default function ReviewPage() {
   const monthKey = dayjs().format('YYYY-MM');
   const monthEarnings = useMemo(() => getMonthEarnings(fundDailyEarnings, monthKey), [fundDailyEarnings, monthKey]);
   const enabledDcaCount = useMemo(() => countEnabledDcaPlans(dcaPlans), [dcaPlans]);
+  const portfolioDataQuality = useMemo(
+    () => getPortfolioDataQuality(enrichedRows, pendingTrades),
+    [enrichedRows, pendingTrades]
+  );
 
   const allocationRows = useMemo(
     () => [...enrichedRows].sort((a, b) => b.amount - a.amount).slice(0, 6),
@@ -422,8 +410,6 @@ export default function ReviewPage() {
     const sortedByWeight = [...enrichedRows].sort((a, b) => b.weight - a.weight);
     const topOne = sortedByWeight[0];
     const topThreeWeight = sortedByWeight.slice(0, 3).reduce((sum, row) => sum + row.weight, 0);
-    const missingCostCount = enrichedRows.filter((row) => !row.hasCost).length;
-    const missingEstimateCount = enrichedRows.filter((row) => !row.hasEstimate).length;
     const lossRows = enrichedRows
       .filter((row) => Number(row.holdingProfitRate) <= -10 && row.weight >= 15)
       .sort((a, b) => a.holdingProfitRate - b.holdingProfitRate);
@@ -440,50 +426,28 @@ export default function ReviewPage() {
     if (topOne && topOne.weight >= 40) {
       checks.push({
         type: 'warn',
-        title: '单只持仓占比较高',
-        text: `${topOne.positionName} 占全部资产 ${formatRatio(topOne.weight)}，组合波动会比较受它影响。`,
+        title: '占比偏高',
+        text: `${topOne.positionName} 占到 ${formatRatio(topOne.weight)}，今天组合波动会明显受它影响。`,
       });
     }
 
     if (topThreeWeight >= 75 && sortedByWeight.length >= 3) {
       checks.push({
         type: 'warn',
-        title: '前三只持仓比较集中',
-        text: `前三只合计占比 ${formatRatio(topThreeWeight)}，复盘时可以重点看它们是否仍符合你的配置思路。`,
+        title: '持仓比较集中',
+        text: `前三只合计占比 ${formatRatio(topThreeWeight)}，复盘时重点看它们是否仍符合你的配置思路。`,
       });
     }
 
     lossRows.slice(0, 2).forEach((row) => {
       checks.push({
         type: 'danger',
-        title: '重点关注亏损持仓',
+        title: '亏损需要单独看',
         text: `${row.positionName} 持有收益率 ${formatPct(row.holdingProfitRate)}，且占比 ${formatRatio(row.weight)}。`,
       });
     });
 
-    if (missingCostCount > 0) {
-      checks.push({
-        type: 'info',
-        title: '部分持仓缺少成本',
-        text: `${missingCostCount} 只基金没有完整成本，持有收益只能按 0 处理，建议补全后再看体检结果。`,
-      });
-    }
-
-    if (missingEstimateCount > 0) {
-      checks.push({
-        type: 'info',
-        title: '部分基金暂无今日估值',
-        text: `${missingEstimateCount} 只持仓暂无估值，今日预估收益不会包含它们的实时变化。`,
-      });
-    }
-
-    if (Array.isArray(pendingTrades) && pendingTrades.length > 0) {
-      checks.push({
-        type: 'info',
-        title: '有待确认交易',
-        text: `${pendingTrades.length} 条买入或卖出还在待确认，确认后资产和收益口径会更准确。`,
-      });
-    }
+    checks.push(...portfolioDataQuality.warnings);
 
     if (enabledDcaCount > 0) {
       checks.push({
@@ -502,29 +466,25 @@ export default function ReviewPage() {
     }
 
     return checks;
-  }, [enabledDcaCount, enrichedRows, pendingTrades]);
+  }, [enabledDcaCount, enrichedRows, portfolioDataQuality.warnings]);
 
   const reviewSummary = useMemo(() => {
     const sortedByWeight = [...enrichedRows].sort((a, b) => b.weight - a.weight);
     const topOne = sortedByWeight[0];
     const topThreeWeight = sortedByWeight.slice(0, 3).reduce((sum, row) => sum + row.weight, 0);
-    const missingCostCount = enrichedRows.filter((row) => !row.hasCost).length;
-    const missingEstimateCount = enrichedRows.filter((row) => !row.hasEstimate).length;
     const lossFocusCount = enrichedRows.filter((row) => Number(row.holdingProfitRate) <= -10 && row.weight >= 15).length;
-    const estimateCoverage = enrichedRows.length > 0
-      ? ((enrichedRows.length - missingEstimateCount) / enrichedRows.length) * 100
-      : 0;
-    const costCoverage = enrichedRows.length > 0
-      ? ((enrichedRows.length - missingCostCount) / enrichedRows.length) * 100
-      : 0;
+    const estimateCoverage = portfolioDataQuality.estimateCoverage;
+    const costCoverage = portfolioDataQuality.costCoverage;
 
     let score = 100;
     if (topOne?.weight >= 40) score -= 18;
     if (topThreeWeight >= 75 && sortedByWeight.length >= 3) score -= 12;
-    score -= Math.min(20, missingCostCount * 8);
-    score -= Math.min(14, missingEstimateCount * 6);
+    score -= Math.min(20, portfolioDataQuality.missingCostCount * 8);
+    score -= Math.min(14, portfolioDataQuality.missingEstimateCount * 6);
+    score -= Math.min(18, portfolioDataQuality.abnormalCostCount * 12);
+    score -= Math.min(10, portfolioDataQuality.amountDeviationCount * 5);
     score -= Math.min(20, lossFocusCount * 10);
-    if (Array.isArray(pendingTrades) && pendingTrades.length > 0) score -= 6;
+    if (portfolioDataQuality.pendingTradeCount > 0) score -= 6;
     score = Math.max(45, Math.min(100, Math.round(score)));
 
     const bestToday = [...enrichedRows].sort((a, b) => b.todayProfit - a.todayProfit)[0];
@@ -544,7 +504,7 @@ export default function ReviewPage() {
       bestToday,
       worstToday,
     };
-  }, [enrichedRows, healthChecks, pendingTrades]);
+  }, [enrichedRows, healthChecks, portfolioDataQuality]);
 
   useEffect(() => {
     let cancelled = false;
@@ -595,6 +555,8 @@ export default function ReviewPage() {
           return {
             code: row.code,
             name: row.name,
+            scopeName: row.scopeName,
+            scopeTitle: row.scopeTitle,
             fundRate: row.rate,
             weight: row.weight,
             sector: label,
@@ -661,10 +623,12 @@ export default function ReviewPage() {
         healthChecks,
         reviewSummary,
         marketContext,
+        dataQuality: portfolioDataQuality,
         question: questionOverride ?? aiQuestion.trim(),
       });
       const content = await requestDeepSeekReview({ apiKey, prompt });
       setAiReview(parseAiReview(content));
+      setAiExpanded(false);
     } catch (error) {
       setAiError(error?.message || 'DeepSeek 请求失败，请稍后再试。');
     } finally {
@@ -733,7 +697,7 @@ export default function ReviewPage() {
           <article>
             <Target size={18} />
             <span>最大持仓</span>
-            <strong>{reviewSummary.topOne ? reviewSummary.topOne.positionName : '--'}</strong>
+            <PositionLabel row={reviewSummary.topOne} compact />
             <em>{reviewSummary.topOne ? `${formatRatio(reviewSummary.topOne.weight)} 占比` : '暂无持仓'}</em>
           </article>
           <article>
@@ -744,9 +708,9 @@ export default function ReviewPage() {
           </article>
           <article>
             <CheckCircle2 size={18} />
-            <span>数据完整度</span>
-            <strong>{formatRatio(reviewSummary.costCoverage)}</strong>
-            <em>按成本数据覆盖计算</em>
+            <span>数据可信度</span>
+            <strong>{formatRatio(Math.min(reviewSummary.costCoverage, reviewSummary.estimateCoverage))}</strong>
+            <em>成本、估值、待确认交易合并判断</em>
           </article>
         </div>
       </section>
@@ -785,22 +749,25 @@ export default function ReviewPage() {
       <section className={styles.reviewStrip}>
         <article>
           <span>今日贡献最大</span>
-          <strong title={reviewSummary.bestToday?.positionName}>{reviewSummary.bestToday?.positionName || '--'}</strong>
+          <PositionLabel row={reviewSummary.bestToday} compact />
           <b className={signedClassName(reviewSummary.bestToday?.todayProfit)}>
             ¥ {formatMoney(reviewSummary.bestToday?.todayProfit)}
           </b>
         </article>
         <article>
           <span>今日拖累最大</span>
-          <strong title={reviewSummary.worstToday?.positionName}>{reviewSummary.worstToday?.positionName || '--'}</strong>
+          <PositionLabel row={reviewSummary.worstToday} compact />
           <b className={signedClassName(reviewSummary.worstToday?.todayProfit)}>
             ¥ {formatMoney(reviewSummary.worstToday?.todayProfit)}
           </b>
         </article>
         <article>
-          <span>估值覆盖</span>
-          <strong>{formatRatio(reviewSummary.estimateCoverage)}</strong>
-          <b>今日预估收益的数据覆盖情况</b>
+          <span>数据可信度</span>
+          <strong>{formatRatio(Math.min(reviewSummary.costCoverage, reviewSummary.estimateCoverage))}</strong>
+          <b>
+            成本 {formatRatio(reviewSummary.costCoverage)} / 估值 {formatRatio(reviewSummary.estimateCoverage)}
+            {portfolioDataQuality.pendingTradeCount ? ` / 待确认 ${portfolioDataQuality.pendingTradeCount}` : ''}
+          </b>
         </article>
       </section>
 
@@ -856,25 +823,18 @@ export default function ReviewPage() {
             AI 设置
           </button>
         </div>
-        <div className={styles.aiModelLine}>
-          <span>{DEEPSEEK_MODEL}</span>
-          <em>{deepSeekKey ? '已设置 API Key' : '未设置 API Key'}</em>
-        </div>
-        <div className={styles.aiAskRow}>
-          <textarea
-            value={aiQuestion}
-            onChange={(event) => setAiQuestion(event.target.value)}
-            placeholder="可以直接问：今天为什么涨？我的持仓哪里需要关注？不填则生成今日复盘。"
-            rows={3}
-          />
-          <div className={styles.aiButtons}>
+        <div className={styles.aiSummaryRow}>
+          <div className={styles.aiModelLine}>
+            <span>{DEEPSEEK_MODEL}</span>
+            <em>{deepSeekKey ? '已设置 API Key' : '未设置 API Key'}</em>
+          </div>
+          <div className={styles.aiButtonsInline}>
             <button type="button" onClick={() => runAiReview('请生成今天的基金持仓复盘。')} disabled={aiLoading}>
               <Bot size={16} />
               {aiLoading ? '生成中' : '生成复盘'}
             </button>
-            <button type="button" onClick={() => runAiReview()} disabled={aiLoading || !aiQuestion.trim()}>
-              <Send size={16} />
-              追问
+            <button type="button" onClick={() => setAiExpanded((value) => !value)}>
+              {aiExpanded ? '收起追问' : '追问/详情'}
             </button>
           </div>
         </div>
@@ -888,13 +848,13 @@ export default function ReviewPage() {
                 {aiReview.answer && aiReview.summary && <p>{aiReview.summary}</p>}
               </article>
             )}
-            {aiReview.today && (
+            {aiExpanded && aiReview.today && (
               <article className={styles.aiResultCard}>
                 <span>今日表现</span>
                 <p>{aiReview.today}</p>
               </article>
             )}
-            {aiReview.focus.length > 0 && (
+            {aiExpanded && aiReview.focus.length > 0 && (
               <article className={styles.aiResultCard}>
                 <span>需要关注</span>
                 <ul>
@@ -902,7 +862,7 @@ export default function ReviewPage() {
                 </ul>
               </article>
             )}
-            {aiReview.dataNotes.length > 0 && (
+            {aiExpanded && aiReview.dataNotes.length > 0 && (
               <article className={styles.aiResultCard}>
                 <span>口径提醒</span>
                 <ul>
@@ -910,6 +870,22 @@ export default function ReviewPage() {
                 </ul>
               </article>
             )}
+          </div>
+        )}
+        {aiExpanded && (
+          <div className={styles.aiAskRow}>
+            <textarea
+              value={aiQuestion}
+              onChange={(event) => setAiQuestion(event.target.value)}
+              placeholder="可以直接问：今天为什么涨？我的持仓哪里需要关注？"
+              rows={3}
+            />
+            <div className={styles.aiButtons}>
+              <button type="button" onClick={() => runAiReview()} disabled={aiLoading || !aiQuestion.trim()}>
+                <Send size={16} />
+                追问
+              </button>
+            </div>
           </div>
         )}
       </section>
@@ -977,8 +953,8 @@ export default function ReviewPage() {
                 <article className={styles.impactItem} key={row.positionKey}>
                   <i>{index + 1}</i>
                   <div>
-                    <strong title={row.positionName}>{row.positionName}</strong>
-                    <span>{row.code} · 估算涨跌幅 {formatPct(row.rate)}</span>
+                    <PositionLabel row={row} />
+                    <span className={styles.metricLine}>估算涨跌幅 {formatPct(row.rate)}</span>
                   </div>
                   <b className={signedClassName(row.todayProfit)}>¥ {formatMoney(row.todayProfit)}</b>
                 </article>
@@ -995,8 +971,8 @@ export default function ReviewPage() {
               {allocationRows.length ? allocationRows.map((row) => (
                 <article className={styles.allocationItem} key={row.positionKey}>
                   <div>
-                    <strong title={row.positionName}>{row.positionName}</strong>
-                    <span>{formatRatio(row.weight)} · ¥ {formatMoney(row.amount)}</span>
+                    <PositionLabel row={row} compact />
+                    <span className={styles.metricLine}>{formatRatio(row.weight)} · ¥ {formatMoney(row.amount)}</span>
                   </div>
                   <div className={styles.bar}>
                     <i style={{ width: `${Math.min(100, Math.max(0, row.weight))}%` }} />
@@ -1013,8 +989,8 @@ export default function ReviewPage() {
               {dragRows.length ? dragRows.map((row) => (
                 <article className={styles.dragItem} key={row.positionKey}>
                   <div>
-                    <strong title={row.positionName}>{row.positionName}</strong>
-                    <span>今日预估 {formatPct(row.rate)}</span>
+                    <PositionLabel row={row} compact />
+                    <span className={styles.metricLine}>今日预估 {formatPct(row.rate)}</span>
                   </div>
                   <b className={styles.down}>¥ {formatMoney(row.todayProfit)}</b>
                 </article>

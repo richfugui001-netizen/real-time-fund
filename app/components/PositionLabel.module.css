@@ -1,0 +1,59 @@
+.positionLabel {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.positionLabel strong,
+.empty {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #effcf8;
+  font-size: 15px;
+  line-height: 1.25;
+  font-weight: 850;
+}
+
+.positionLabel > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: rgba(239, 252, 248, .58);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.positionLabel em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+}
+
+.positionLabel b {
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid rgba(124, 232, 214, .28);
+  border-radius: 999px;
+  background: rgba(124, 232, 214, .1);
+  color: #7ce8d6;
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 1.1;
+  font-weight: 850;
+}
+
+.compact strong {
+  font-size: 14px;
+}
+
+.muted strong {
+  color: rgba(239, 252, 248, .88);
+}

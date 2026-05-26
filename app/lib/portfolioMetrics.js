@@ -23,6 +23,101 @@ const getTransactionScopeMatcher = (scopeGroupIds) => {
   return () => true;
 };
 
+const isPositiveHolding = (holding) => {
+  const share = toFiniteNumber(holding?.share);
+  return share != null && share > 0;
+};
+
+const isGenericScopeName = (name) => {
+  const text = String(name || '').trim();
+  return text === '全部' || text === '自选';
+};
+
+const getBusinessGroupNames = (groupNames) => {
+  const names = Array.isArray(groupNames) ? groupNames.filter(Boolean) : [];
+  const businessNames = names.filter((name) => !isGenericScopeName(name));
+  return businessNames.length ? businessNames : [];
+};
+
+const getFundGroupNames = (code, groups, groupHoldings, groupNameById) => {
+  const names = [];
+  const seen = new Set();
+  const addName = (groupId) => {
+    const name = groupNameById.get(groupId);
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    names.push(name);
+  };
+
+  (Array.isArray(groups) ? groups : []).forEach((group) => {
+    if (!group?.id) return;
+    if (Array.isArray(group.codes) && group.codes.map(String).includes(String(code))) {
+      addName(group.id);
+    }
+  });
+
+  Object.entries(groupHoldings || {}).forEach(([groupId, bucket]) => {
+    if (isPositiveHolding(bucket?.[code])) {
+      addName(groupId);
+    }
+  });
+
+  return names;
+};
+
+const getDisplayScopeName = (groupNames) => {
+  if (!Array.isArray(groupNames) || groupNames.length === 0) return '';
+  if (groupNames.length === 1) return groupNames[0];
+  return `${groupNames[0]} +${groupNames.length - 1}`;
+};
+
+export const getPortfolioPositions = ({ funds, holdings, groupHoldings, groups }) => {
+  const rows = [];
+  const groupNameById = new Map(
+    (Array.isArray(groups) ? groups : [])
+      .filter((group) => group?.id)
+      .map((group) => [group.id, group.name || '未命名分组'])
+  );
+  const validGroupIds = new Set(groupNameById.keys());
+
+  (Array.isArray(funds) ? funds : []).forEach((fund) => {
+    const code = fund?.code;
+    if (!code) return;
+
+    const globalHolding = holdings?.[code];
+    const hasGlobalHolding = isPositiveHolding(globalHolding);
+    if (hasGlobalHolding) {
+      const groupNames = getFundGroupNames(code, groups, groupHoldings, groupNameById);
+      const businessGroupNames = getBusinessGroupNames(groupNames);
+      rows.push({
+        fund,
+        holding: globalHolding,
+        scopeGroupIds: null,
+        scopeName: getDisplayScopeName(businessGroupNames),
+        scopeTitle: businessGroupNames.join('、'),
+        positionKey: `${code}:all`,
+      });
+    }
+
+    Object.entries(groupHoldings || {}).forEach(([groupId, bucket]) => {
+      if (!validGroupIds.has(groupId)) return;
+      const holding = bucket?.[code];
+      if (!isPositiveHolding(holding)) return;
+      if (hasGlobalHolding) return;
+      rows.push({
+        fund,
+        holding,
+        scopeGroupIds: groupId,
+        scopeName: groupNameById.get(groupId) || '未命名分组',
+        scopeTitle: groupNameById.get(groupId) || '未命名分组',
+        positionKey: `${code}:${groupId}`,
+      });
+    });
+  });
+
+  return rows;
+};
+
 export const getFundMetricBasis = (fund) => {
   const confirmedNav = toFiniteNumber(fund?.dwjz);
   const estimatedNav = toFiniteNumber(fund?.gsz) ?? confirmedNav;
